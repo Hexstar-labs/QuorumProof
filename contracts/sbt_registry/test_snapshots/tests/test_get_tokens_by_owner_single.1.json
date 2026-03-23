@@ -299,11 +299,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "owner_of"
+                "symbol": "get_tokens_by_owner"
               }
             ],
             "data": {
-              "u64": 1
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }
@@ -322,11 +322,15 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "owner_of"
+                "symbol": "get_tokens_by_owner"
               }
             ],
             "data": {
-              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+              "vec": [
+                {
+                  "u64": 1
+                }
+              ]
             }
           }
         }
