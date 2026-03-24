@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 3,
+    "address": 2,
     "nonce": 0
   },
   "auth": [
@@ -11,22 +11,17 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "issue_credential",
+              "function_name": "mint",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "u64": 1
                 },
                 {
-                  "u32": 1
-                },
-                {
-                  "bytes": "697066733a2f2f516d54657374"
+                  "bytes": "697066733a2f2f516d534254"
                 }
-                },
-                "void"
               ]
             }
           },
@@ -37,11 +32,11 @@
     []
   ],
   "ledger": {
-    "protocol_version": 20,
-    "sequence_number": 20000,
-    "timestamp": 1000000,
+    "protocol_version": 21,
+    "sequence_number": 0,
+    "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
-    "base_reserve": 10,
+    "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
@@ -73,7 +68,41 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Credential"
+                              "symbol": "Owner"
+                            },
+                            {
+                              "u64": 1
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "OwnerTokens"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "u64": 1
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Token"
                             },
                             {
                               "u64": 1
@@ -84,17 +113,11 @@
                           "map": [
                             {
                               "key": {
-                                "symbol": "credential_type"
+                                "symbol": "credential_id"
                               },
                               "val": {
-                                "u32": 1
+                                "u64": 1
                               }
-                            },
-                            {
-                              "key": {
-                                "symbol": "expires_at"
-                              },
-                              "val": "void"
                             },
                             {
                               "key": {
@@ -106,34 +129,18 @@
                             },
                             {
                               "key": {
-                                "symbol": "issuer"
+                                "symbol": "metadata_uri"
+                              },
+                              "val": {
+                                "bytes": "697066733a2f2f516d534254"
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "owner"
                               },
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "metadata_hash"
-                              },
-                              "val": {
-                                "bytes": "697066733a2f2f516d54657374"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "revoked"
-                              },
-                              "val": {
-                                "bool": false
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "subject"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                               }
                             }
                           ]
@@ -143,31 +150,12 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "CredentialCount"
+                              "symbol": "TokenCount"
                             }
                           ]
                         },
                         "val": {
                           "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "SubjectCredentials"
-                            },
-                            {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "vec": [
-                            {
-                              "u64": 1
-                            }
-                          ]
                         }
                       }
                     ]
@@ -177,7 +165,7 @@
             },
             "ext": "v0"
           },
-          524288
+          4095
         ]
       ],
       [
@@ -231,7 +219,7 @@
             },
             "ext": "v0"
           },
-          524288
+          4095
         ]
       ]
     ]
@@ -252,7 +240,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "issue_credential"
+                "symbol": "mint"
               }
             ],
             "data": {
@@ -261,16 +249,11 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  "u64": 1
                 },
                 {
-                  "u32": 1
-                },
-                {
-                  "bytes": "697066733a2f2f516d54657374"
+                  "bytes": "697066733a2f2f516d534254"
                 }
-                },
-                "void"
               ]
             }
           }
@@ -290,7 +273,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "issue_credential"
+                "symbol": "mint"
               }
             ],
             "data": {
@@ -316,11 +299,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_credential"
+                "symbol": "get_tokens_by_owner"
               }
             ],
             "data": {
-              "u64": 1
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }
@@ -339,64 +322,13 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_credential"
+                "symbol": "get_tokens_by_owner"
               }
             ],
             "data": {
-              "map": [
+              "vec": [
                 {
-                  "key": {
-                    "symbol": "credential_type"
-                  },
-                  "val": {
-                    "u32": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "expires_at"
-                  },
-                  "val": "void"
-                },
-                {
-                  "key": {
-                    "symbol": "id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "issuer"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "metadata_hash"
-                  },
-                  "val": {
-                    "bytes": "697066733a2f2f516d54657374"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "revoked"
-                  },
-                  "val": {
-                    "bool": false
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "subject"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                  }
+                  "u64": 1
                 }
               ]
             }
