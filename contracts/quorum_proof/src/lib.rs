@@ -130,6 +130,38 @@ impl QuorumProofContract {
         id
     }
 
+    /// Issue credentials to multiple subjects in one call. Returns a Vec of credential IDs.
+    /// Panics if subjects, credential_types, and metadata_hashes lengths differ.
+    pub fn batch_issue_credentials(
+        env: Env,
+        issuer: Address,
+        subjects: Vec<Address>,
+        credential_types: Vec<u32>,
+        metadata_hashes: Vec<soroban_sdk::Bytes>,
+        expires_at: Option<u64>,
+    ) -> Vec<u64> {
+        issuer.require_auth();
+        let n = subjects.len();
+        assert!(
+            credential_types.len() == n && metadata_hashes.len() == n,
+            "input lengths must match"
+        );
+        let mut ids: Vec<u64> = Vec::new(&env);
+        for i in 0..n {
+            let id = Self::issue_credential(
+                env.clone(),
+                issuer.clone(),
+                subjects.get(i).unwrap(),
+                credential_types.get(i).unwrap(),
+                metadata_hashes.get(i).unwrap(),
+                expires_at.clone(),
+            );
+            ids.push_back(id);
+        }
+        ids
+    }
+
+    /// Retrieve a credential by ID. Panics if the credential has expired.
     /// Retrieve a credential by ID. Panics with ContractError::CredentialNotFound if missing.
     pub fn get_credential(env: Env, credential_id: u64) -> Credential {
         let credential: Credential = env
@@ -1068,6 +1100,69 @@ mod tests {
 
         // 1 attestor, threshold of 2 should panic
         client.update_threshold(&creator, &slice_id, &2u32);
+    }
+
+    #[test]
+    fn test_batch_issue_credentials_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let subject1 = Address::generate(&env);
+        let subject2 = Address::generate(&env);
+        let subject3 = Address::generate(&env);
+
+        let mut subjects = soroban_sdk::Vec::new(&env);
+        subjects.push_back(subject1.clone());
+        subjects.push_back(subject2.clone());
+        subjects.push_back(subject3.clone());
+
+        let mut cred_types = soroban_sdk::Vec::new(&env);
+        cred_types.push_back(1u32);
+        cred_types.push_back(2u32);
+        cred_types.push_back(1u32);
+
+        let mut hashes = soroban_sdk::Vec::new(&env);
+        hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm1"));
+        hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm2"));
+        hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm3"));
+
+        let ids = client.batch_issue_credentials(&issuer, &subjects, &cred_types, &hashes, &None);
+
+        assert_eq!(ids.len(), 3);
+        // Each subject should have exactly one credential
+        assert_eq!(client.get_credentials_by_subject(&subject1).len(), 1);
+        assert_eq!(client.get_credentials_by_subject(&subject2).len(), 1);
+        assert_eq!(client.get_credentials_by_subject(&subject3).len(), 1);
+        // IDs are sequential
+        assert_eq!(ids.get(1).unwrap(), ids.get(0).unwrap() + 1);
+        assert_eq!(ids.get(2).unwrap(), ids.get(0).unwrap() + 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "input lengths must match")]
+    fn test_batch_issue_credentials_mismatched_lengths_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+
+        let mut subjects = soroban_sdk::Vec::new(&env);
+        subjects.push_back(Address::generate(&env));
+        subjects.push_back(Address::generate(&env));
+
+        let mut cred_types = soroban_sdk::Vec::new(&env);
+        cred_types.push_back(1u32); // only 1, mismatched
+
+        let mut hashes = soroban_sdk::Vec::new(&env);
+        hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm1"));
+        hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm2"));
+
+        client.batch_issue_credentials(&issuer, &subjects, &cred_types, &hashes, &None);
     }
 }
 
