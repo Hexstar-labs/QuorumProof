@@ -338,19 +338,6 @@ mod tests {
     use soroban_sdk::testutils::{Address as _, Ledger as _, LedgerInfo};
     use soroban_sdk::{Bytes, Env};
 
-    fn set_ledger_timestamp(env: &Env, timestamp: u64) {
-        env.ledger().set(LedgerInfo {
-            timestamp,
-            protocol_version: 20,
-            sequence_number: 100,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_persistent_entry_ttl: 4096,
-            min_temp_entry_ttl: 16,
-            max_entry_ttl: 6_312_000,
-        });
-    }
-
     #[test]
     fn test_storage_persists_across_ledgers() {
         let env = Env::default();
@@ -362,8 +349,6 @@ mod tests {
         let subject = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
-
-        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         // Advance ledger sequence by 20_000 ledgers (beyond default eviction TTL)
         env.ledger().set(LedgerInfo {
@@ -400,14 +385,12 @@ mod tests {
         let subject = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
-        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
         assert_eq!(id, 1);
 
         let cred = client.get_credential(&id);
         assert_eq!(cred.subject, subject);
         assert_eq!(cred.issuer, issuer);
         assert!(!cred.revoked);
-        assert_eq!(cred.expires_at, None);
     }
 
     #[test]
@@ -451,11 +434,13 @@ mod tests {
         let creator = Address::generate(&env);
 
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
         let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         let mut attestors = Vec::new(&env);
         attestors.push_back(attestor1.clone());
         attestors.push_back(attestor2.clone());
+        let slice_id = client.create_slice(&attestors, &2u32);
         let slice_id = client.create_slice(&creator, &attestors, &2u32);
 
         assert!(!client.is_attested(&cred_id, &slice_id));
@@ -476,7 +461,6 @@ mod tests {
         let subject = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
-        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         client.revoke_credential(&issuer, &id);
 
@@ -500,7 +484,6 @@ mod tests {
 
         client.revoke_credential(&subject, &id);
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
-        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         client.revoke_credential(&subject, &id);
 
@@ -551,7 +534,6 @@ mod tests {
         let unauthorized = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
-        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         client.revoke_credential(&unauthorized, &id);
     }

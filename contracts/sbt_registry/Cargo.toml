@@ -8,9 +8,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+quorum_proof = { path = "../quorum_proof", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+quorum_proof = { path = "../quorum_proof", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
