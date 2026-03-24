@@ -119,6 +119,17 @@ export async function isAttested(credentialId, sliceId) {
 }
 
 /**
+ * Retrieve a quorum slice by ID.
+ * Returns a plain JS object with fields: id, creator, attestors, threshold.
+ * @param {number|string} sliceId
+ * @returns {Promise<{id: bigint, creator: string, attestors: string[], threshold: number}>}
+ */
+export async function getSlice(sliceId) {
+  const sliceVal = nativeToScVal(BigInt(sliceId), { type: 'u64' });
+  return simulate(CONTRACT_ID, 'get_slice', [sliceVal]);
+}
+
+/**
  * Get all attestor addresses for a credential.
  * @returns {Promise<string[]>}
  */
@@ -149,16 +160,16 @@ export async function verifyClaim(credentialId, claimType, proofHex) {
       'ZK Contract ID not configured. Set VITE_CONTRACT_ZK_VERIFIER in .env'
     );
   }
-  const { nativeToScVal: n, xdr: x } = await import('@stellar/stellar-sdk');
   const credVal = nativeToScVal(BigInt(credentialId), { type: 'u64' });
-  const claimVal = nativeToScVal(claimType, { type: 'string' });
+  // Encode ClaimType as a Soroban enum variant: scvVec([scvSymbol("HasDegree")])
+  const claimVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(claimType)]);
   const proofBytes = hexToBytes(proofHex);
   const proofVal = xdr.ScVal.scvBytes(proofBytes);
   return simulate(ZK_CONTRACT_ID, 'verify_claim', [credVal, claimVal, proofVal]);
 }
 
 /** Utility: hex string → Uint8Array */
-function hexToBytes(hex) {
+export function hexToBytes(hex) {
   const clean = hex.replace(/^0x/, '').replace(/\s/g, '');
   if (clean.length % 2 !== 0) throw new Error('Invalid hex string');
   const bytes = new Uint8Array(clean.length / 2);

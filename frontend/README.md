@@ -1,62 +1,73 @@
-# QuorumProof Frontend
+# React + TypeScript + Vite
 
-Public-facing credential verification web app for QuorumProof.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## Features
+Currently, two official plugins are available:
 
-- `/verify` — Employer verification page (no wallet required)
-  - Look up credentials by **Credential ID** or **Stellar Address**
-  - View attestor list, metadata, revocation/expiry status
-  - Shareable URL with `?credentialId=<id>` query param
-  - Zero-Knowledge claim verification form
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## Setup
+## React Compiler
 
-```bash
-cd frontend
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-# Copy environment config
-cp .env.example .env
+## Expanding the ESLint configuration
 
-# Edit .env with your contract IDs
-# VITE_CONTRACT_QUORUM_PROOF=C...
-# VITE_CONTRACT_ZK_VERIFIER=C...
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
 
-# Install dependencies
-npm install
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
 
-# Start dev server
-npm run dev
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
 
-Open [http://localhost:5173/verify](http://localhost:5173/verify).
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
-## Environment Variables
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
 
-| Variable | Description |
-|---|---|
-| `VITE_STELLAR_NETWORK` | `testnet`, `mainnet`, or `futurenet` |
-| `VITE_STELLAR_RPC_URL` | Soroban RPC endpoint |
-| `VITE_CONTRACT_QUORUM_PROOF` | Deployed QuorumProof contract ID |
-| `VITE_CONTRACT_ZK_VERIFIER` | Deployed ZK Verifier contract ID |
-
-## Architecture
-
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
-frontend/
-├── index.html          # HTML entry point
-├── vite.config.js      # Vite config
-├── .env.example        # Environment template
-└── src/
-    ├── main.js         # SPA router
-    ├── verify.js       # /verify page logic
-    ├── stellar.js      # Soroban RPC wrapper (read-only, no wallet)
-    └── styles.css      # Design system
-```
-
-## Tech Stack
-
-- **Vite** — build tool
-- **@stellar/stellar-sdk** — Soroban contract simulation
-- **Vanilla JS** — no framework
-- **Google Fonts (Inter)** — typography

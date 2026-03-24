@@ -8,9 +8,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+sbt_registry = { path = "../sbt_registry", default-features = false }
+zk_verifier = { path = "../zk_verifier", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+sbt_registry = { path = "../sbt_registry", features = ["testutils"] }
+zk_verifier = { path = "../zk_verifier", features = ["testutils"] }
 
 [features]
-testutils = ["soroban-sdk/testutils"]
+testutils = ["soroban-sdk/testutils", "sbt_registry/testutils", "zk_verifier/testutils"]
