@@ -235,6 +235,14 @@ impl QuorumProofContract {
             .instance()
             .get(&DataKey::Attestors(credential_id))
             .unwrap_or(Vec::new(&env));
+        
+        // Check if attestor has already attested for this credential
+        for existing_attestor in attestors.iter() {
+            if existing_attestor == attestor {
+                panic!("attestor has already attested for this credential");
+            }
+        }
+        
         attestors.push_back(attestor);
         env.storage()
             .instance()
@@ -333,6 +341,8 @@ mod tests {
             max_entry_ttl: 311_040,
             min_persistent_entry_ttl: 10_000,
             min_temp_entry_ttl: 10,
+            min_persistent_entry_ttl: 4_320,
+            min_temp_entry_ttl: 16,
             min_persistent_entry_ttl: 4096,
             min_temp_entry_ttl: 16,
             max_entry_ttl: 6_312_000,
@@ -440,6 +450,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "metadata_hash cannot be empty")]
     fn test_empty_metadata_hash_rejection() {
+    #[should_panic(expected = "attestor has already attested for this credential")]
+    fn test_duplicate_attestation_rejection() {
     #[should_panic(expected = "only subject or issuer can revoke")]
     fn test_unauthorized_revoke_credential() {
         let env = Env::default();
@@ -452,6 +464,22 @@ mod tests {
         let empty_metadata = Bytes::new(&env);
         
         client.issue_credential(&issuer, &subject, &1u32, &empty_metadata);
+        let attestor1 = Address::generate(&env);
+        let attestor2 = Address::generate(&env);
+
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
+
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(attestor1.clone());
+        attestors.push_back(attestor2.clone());
+        let slice_id = client.create_slice(&attestors, &2u32);
+
+        // First attestation should succeed
+        client.attest(&attestor1, &cred_id, &slice_id);
+        
+        // Second attestation by same attestor should panic
+        client.attest(&attestor1, &cred_id, &slice_id);
     }
 
     #[test]
@@ -599,6 +627,15 @@ mod tests {
         let contract_id = env.register_contract(None, QuorumProofContract);
         let client = QuorumProofContractClient::new(&env, &contract_id);
 
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata);
+
+        client.revoke_credential(&unauthorized, &id);
+    }
+}
         let subject = Address::generate(&env);
 
         let ids = client.get_credentials_by_subject(&subject);
