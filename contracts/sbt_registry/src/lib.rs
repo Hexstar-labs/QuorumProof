@@ -9,20 +9,21 @@ pub enum ContractError {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
-    Token(u64),
-    TokenCount,
-    Owner(u64),
-    OwnerTokens(Address),
-}
-
-#[contracttype]
-#[derive(Clone)]
 pub struct SoulboundToken {
     pub id: u64,
     pub owner: Address,
     pub credential_id: u64,
     pub metadata_uri: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Token(u64),
+    TokenCount,
+    Owner(u64),
+    OwnerTokens(Address),
+    OwnerCredential(Address, u64), // Track (owner, credential_id) -> token_id mapping
 }
 
 #[contract]
@@ -33,6 +34,12 @@ impl SbtRegistryContract {
     /// Mint a soulbound token. Non-transferable by design.
     pub fn mint(env: Env, owner: Address, credential_id: u64, metadata_uri: Bytes) -> u64 {
         owner.require_auth();
+        
+        // Check if SBT already exists for this owner+credential pair
+        if env.storage().instance().has(&DataKey::OwnerCredential(owner.clone(), credential_id)) {
+            panic_with_error!(&env, ContractError::SoulboundNonTransferable as u32);
+        }
+        
         let id: u64 = env
             .storage()
             .instance()
@@ -63,7 +70,11 @@ impl SbtRegistryContract {
         owner_tokens.push_back(id);
         env.storage()
             .instance()
-            .set(&DataKey::OwnerTokens(owner), &owner_tokens);
+            .set(&DataKey::OwnerTokens(owner.clone()), &owner_tokens);
+        // Track (owner, credential_id) -> token_id mapping
+        env.storage()
+            .instance()
+            .set(&DataKey::OwnerCredential(owner, credential_id), &id);
         id
     }
 
@@ -211,5 +222,26 @@ mod tests {
         let to = Address::generate(&env);
         // This should always panic with SoulboundNonTransferable
         client.transfer(&owner, &to, &token_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "SoulboundNonTransferable")]
+    fn test_duplicate_sbt_minting_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SbtRegistryContract);
+        let client = SbtRegistryContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let credential_id = 1u64;
+        
+        // Mint first SBT for this owner+credential pair
+        let token_id_1 = client.mint(&owner, &credential_id, &uri);
+        assert_eq!(token_id_1, 1);
+        
+        // Attempt to mint second SBT for the same owner+credential pair
+        // This should panic with SoulboundNonTransferable
+        client.mint(&owner, &credential_id, &uri);
     }
 }
