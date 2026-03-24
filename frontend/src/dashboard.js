@@ -1,23 +1,28 @@
 /**
- * dashboard.js — Credential Dashboard Page Logic
+ * dashboard.js — Credential Dashboard Page
  *
- * Handles the /dashboard route:
- *  - Simulates a connected wallet (via input address)
- *  - Fetches and displays all credentials issued to that address
- *  - Displays attestation status and attestor lists for each credential
+ * /dashboard route — wallet-gated via WalletGuard.
+ * Fetches all credentials for the connected wallet, shows attestation status
+ * per credential via is_attested(credId, sliceId), and renders quorum slice
+ * members with role labels via get_slice.
  */
 
 import { navigateTo } from './main.js';
 import {
   getCredentialsBySubject,
   getCredential,
+  isAttested,
   isExpired,
   getAttestors,
+  getSlice,
   decodeMetadataHash,
   NETWORK,
 } from './stellar.js';
 
-// ── Credential type labels ──────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
+const WALLET_KEY = 'qp-wallet-address';
+const SLICE_KEY  = 'qp-slice-id';
+
 const CREDENTIAL_TYPES = {
   1: '🎓 Degree',
   2: '🏛️ License',
@@ -26,15 +31,17 @@ const CREDENTIAL_TYPES = {
   5: '🔬 Research',
 };
 
+// Role labels assigned by attestor index within the slice
+const ATTESTOR_ROLES = ['Lead Verifier', 'Co-Verifier', 'Auditor', 'Reviewer', 'Observer'];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function credTypeLabel(n) {
   return CREDENTIAL_TYPES[Number(n)] || `Type ${n}`;
 }
 
-// ── Format helpers ────────────────────────────────────────────────────────
 function formatTimestamp(ts) {
   if (!ts) return 'Never';
-  const d = new Date(Number(ts) * 1000);
-  return d.toLocaleDateString(undefined, {
+  return new Date(Number(ts) * 1000).toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
   });
 }
@@ -44,8 +51,13 @@ function formatAddress(addr) {
   return addr.slice(0, 8) + '…' + addr.slice(-6);
 }
 
-// ── Shared navbar builder ────────────────────────────────────────────────
+function attestorRole(index) {
+  return ATTESTOR_ROLES[index] || `Member ${index + 1}`;
+}
+
+// ── Shared Navbar ────────────────────────────────────────────────────────────
 export function renderNavbar(activeRoute) {
+  const walletAddr = localStorage.getItem(WALLET_KEY) || '';
   return `
     <nav class="navbar">
       <div class="container navbar__inner">
@@ -55,9 +67,15 @@ export function renderNavbar(activeRoute) {
         </a>
         <div class="navbar__links">
           <a href="/dashboard" class="nav-link ${activeRoute === '/dashboard' ? 'active' : ''}" data-route="/dashboard">Dashboard</a>
-          <a href="/verify" class="nav-link ${activeRoute === '/verify' ? 'active' : ''}" data-route="/verify">Verify</a>
+          <a href="/verify"    class="nav-link ${activeRoute === '/verify'    ? 'active' : ''}" data-route="/verify">Verify</a>
         </div>
         <div class="navbar__right">
+          ${walletAddr
+            ? `<span class="wallet-pill" title="${walletAddr}">
+                 <span class="wallet-pill__dot"></span>
+                 ${formatAddress(walletAddr)}
+               </span>`
+            : ''}
           <span class="navbar__badge">${NETWORK}</span>
         </div>
       </div>
@@ -67,7 +85,7 @@ export function renderNavbar(activeRoute) {
 
 export function bindNavbarLinks(container) {
   container.querySelectorAll('a[data-route]').forEach(link => {
-    link.addEventListener('click', (e) => {
+    link.addEventListener('click', e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey) return;
       e.preventDefault();
       navigateTo(link.dataset.route);
@@ -75,118 +93,151 @@ export function bindNavbarLinks(container) {
   });
 }
 
-// ── Main Dashboard Render ──────────────────────────────────────────────────
-export function renderDashboardPage(container) {
-  // We use local storage to simulate a "connected wallet"
-  const savedAddress = localStorage.getItem('qp-wallet-address') || '';
+// ── WalletGuard ──────────────────────────────────────────────────────────────
+/**
+ * Renders the wallet-connect gate. Returns true if a wallet is already
+ * connected (caller should proceed to load content), false otherwise.
+ */
+function renderWalletGuard(container, onConnected) {
+  const saved = localStorage.getItem(WALLET_KEY) || '';
+  const savedSlice = localStorage.getItem(SLICE_KEY) || '';
+
+  if (saved) {
+    onConnected(saved, savedSlice || null);
+    return;
+  }
 
   container.innerHTML = `
     ${renderNavbar('/dashboard')}
+    <main class="container dashboard-main" style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh;">
+      <div class="wallet-guard-card">
+        <div class="wallet-guard__icon">🔐</div>
+        <h2 class="wallet-guard__title">Connect Your Wallet</h2>
+        <p class="wallet-guard__sub">Enter your Stellar address to access your credential dashboard.</p>
 
-    <main class="container container--wide dashboard-main">
-      <header class="dashboard-header">
-        <div>
-          <h1 class="dashboard-title">Credential Dashboard</h1>
-          <p class="dashboard-subtitle">Manage and track your verifiable credentials</p>
+        <div class="wallet-guard__form">
+          <div class="input-wrap" style="margin-bottom:12px;">
+            <span class="input-icon">G</span>
+            <input id="guard-input-wallet" type="text"
+              placeholder="Stellar address (GABC…56 chars)"
+              autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="input-wrap" style="margin-bottom:16px;">
+            <span class="input-icon">#</span>
+            <input id="guard-input-slice" type="number" min="1"
+              placeholder="Quorum Slice ID (optional)"
+              autocomplete="off" />
+          </div>
+          <button class="btn btn--primary" id="guard-btn-connect" style="width:100%;">
+            Connect Wallet
+          </button>
         </div>
-        
-        <!-- Wallet Connection Simulation -->
-        <div class="wallet-sim-card">
-          <div class="wallet-sim__label">Connected Wallet (Simulated)</div>
-          <div class="input-group">
-            <div class="input-wrap">
-              <span class="input-icon">G</span>
-              <input id="input-wallet" type="text" placeholder="Enter your Stellar address (GABC…)" value="${savedAddress}" />
-            </div>
-            <button class="btn btn--primary" id="btn-connect">
-              ${savedAddress ? 'Switch Wallet' : 'Connect'}
-            </button>
-            ${savedAddress ? '<button class="btn btn--ghost" id="btn-disconnect">Disconnect</button>' : ''}
-          </div>
-        </div>
-      </header>
-
-      <div id="dashboard-content" class="dashboard-content">
-        ${savedAddress ? `
-          <div class="loading-state">
-            <div class="spinner"></div>
-            <p>Loading your credentials…</p>
-          </div>
-        ` : `
-          <div class="empty-state">
-            <div class="empty-state__icon">👛</div>
-            <div class="empty-state__title">No wallet connected</div>
-            <p>Connect your Stellar address to view your credentials.</p>
-          </div>
-        `}
       </div>
     </main>
-
-    <footer class="footer">
-      <div class="container">
-        Powered by <a href="https://stellar.org" target="_blank" rel="noopener">Stellar Soroban</a>
-        · <a href="https://github.com/Phantomcall/QuorumProof" target="_blank" rel="noopener">QuorumProof</a>
-      </div>
-    </footer>
+    <footer class="footer"><div class="container">
+      Powered by <a href="https://stellar.org" target="_blank" rel="noopener">Stellar Soroban</a>
+      · <a href="https://github.com/Phantomcall/QuorumProof" target="_blank" rel="noopener">QuorumProof</a>
+    </div></footer>
   `;
 
   bindNavbarLinks(container);
 
-  const btnConnect = container.querySelector('#btn-connect');
-  const btnDisconnect = container.querySelector('#btn-disconnect');
-  const inputWallet = container.querySelector('#input-wallet');
+  const inputWallet = container.querySelector('#guard-input-wallet');
+  const inputSlice  = container.querySelector('#guard-input-slice');
+  const btnConnect  = container.querySelector('#guard-btn-connect');
 
-  btnConnect.addEventListener('click', () => {
+  const connect = () => {
     const addr = inputWallet.value.trim();
     if (!addr.startsWith('G') || addr.length < 56) {
-      alert('Please enter a valid Stellar address (starts with G, 56+ characters).');
+      inputWallet.style.borderColor = 'var(--red)';
+      inputWallet.focus();
       return;
     }
-    localStorage.setItem('qp-wallet-address', addr);
-    renderDashboardPage(container); // Re-render page
-  });
+    inputWallet.style.borderColor = '';
+    const sliceId = inputSlice.value.trim();
+    localStorage.setItem(WALLET_KEY, addr);
+    if (sliceId) localStorage.setItem(SLICE_KEY, sliceId);
+    else localStorage.removeItem(SLICE_KEY);
+    renderDashboardPage(container);
+  };
 
-  inputWallet.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') btnConnect.click();
-  });
-
-  if (btnDisconnect) {
-    btnDisconnect.addEventListener('click', () => {
-      localStorage.removeItem('qp-wallet-address');
-      renderDashboardPage(container);
-    });
-  }
-
-  // Load credentials if connected
-  if (savedAddress) {
-    loadCredentials(savedAddress, container.querySelector('#dashboard-content'));
-  }
+  btnConnect.addEventListener('click', connect);
+  inputWallet.addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
+  inputSlice.addEventListener('keydown',  e => { if (e.key === 'Enter') connect(); });
 }
 
-// ── Load and Render Credentials Grid ─────────────────────────────────────────
-async function loadCredentials(address, contentEl) {
+// ── Main Dashboard Page ──────────────────────────────────────────────────────
+export function renderDashboardPage(container) {
+  renderWalletGuard(container, (walletAddress, sliceId) => {
+    _renderDashboard(container, walletAddress, sliceId);
+  });
+}
+
+function _renderDashboard(container, walletAddress, sliceId) {
+  container.innerHTML = `
+    ${renderNavbar('/dashboard')}
+    <main class="container container--wide dashboard-main">
+      <header class="dashboard-header">
+        <div>
+          <h1 class="dashboard-title">Credential Dashboard</h1>
+          <p class="dashboard-subtitle">Your verifiable credentials on Stellar Soroban</p>
+        </div>
+        <div class="dashboard-header__actions">
+          <span class="wallet-address-chip" title="${walletAddress}">
+            <span class="wallet-pill__dot"></span>
+            ${formatAddress(walletAddress)}
+          </span>
+          ${sliceId ? `<span class="badge badge--gray">Slice #${sliceId}</span>` : ''}
+          <button class="btn btn--ghost btn--sm" id="btn-disconnect">Disconnect</button>
+        </div>
+      </header>
+
+      <div id="dashboard-content">
+        <div class="loading-state">
+          <div class="spinner"></div>
+          <p>Loading credentials…</p>
+        </div>
+      </div>
+    </main>
+    <footer class="footer"><div class="container">
+      Powered by <a href="https://stellar.org" target="_blank" rel="noopener">Stellar Soroban</a>
+      · <a href="https://github.com/Phantomcall/QuorumProof" target="_blank" rel="noopener">QuorumProof</a>
+    </div></footer>
+  `;
+
+  bindNavbarLinks(container);
+
+  container.querySelector('#btn-disconnect').addEventListener('click', () => {
+    localStorage.removeItem(WALLET_KEY);
+    localStorage.removeItem(SLICE_KEY);
+    renderDashboardPage(container);
+  });
+
+  loadCredentials(walletAddress, sliceId, container.querySelector('#dashboard-content'));
+}
+
+// ── Load Credentials ─────────────────────────────────────────────────────────
+async function loadCredentials(address, sliceId, contentEl) {
   try {
     const ids = await getCredentialsBySubject(address);
 
     if (!ids || ids.length === 0) {
-      contentEl.innerHTML = `
-        <div class="empty-state" style="margin-top: 48px; border: 1px dashed var(--border); border-radius: var(--radius-lg);">
-          <div class="empty-state__icon">📭</div>
-          <div class="empty-state__title">No credentials found</div>
-          <p>You haven't been issued any credentials yet.</p>
-        </div>
-      `;
+      contentEl.innerHTML = renderEmptyState();
+      bindEmptyStateCTA(contentEl);
       return;
     }
 
     contentEl.innerHTML = `
-      <div class="dashboard-grid">
-        ${ids.map(id => `<div id="cred-card-${id}" class="cred-card skeleton-loader"></div>`).join('')}
+      <div class="dashboard-grid" id="cred-grid">
+        ${ids.map(id => `
+          <div id="cred-card-${id}" class="cred-card skeleton-loader" style="min-height:380px; position:relative;"></div>
+        `).join('')}
       </div>
     `;
 
-    // Fetch details for all credentials in parallel
-    await Promise.all(ids.map(id => renderDashboardCard(id, document.getElementById(`cred-card-${id}`))));
+    await Promise.all(ids.map(id =>
+      renderCredentialCard(id, sliceId, document.getElementById(`cred-card-${id}`))
+    ));
 
   } catch (err) {
     contentEl.innerHTML = `
@@ -194,49 +245,63 @@ async function loadCredentials(address, contentEl) {
         <div class="error-card__icon">⚠️</div>
         <div>
           <div class="error-card__title">Could Not Load Credentials</div>
-          <div class="error-card__msg">${err.message || 'Failed to fetch credentials from the network.'}</div>
+          <div class="error-card__msg">${err.message || 'Failed to fetch from network.'}</div>
         </div>
       </div>
     `;
   }
 }
 
-async function renderDashboardCard(credId, cardEl) {
+// ── Credential Card ───────────────────────────────────────────────────────────
+async function renderCredentialCard(credId, sliceId, cardEl) {
   try {
-    const [credential, attestors, expired] = await Promise.all([
+    // Fetch credential + expiry in parallel; slice + attestation status depend on sliceId
+    const [credential, expired] = await Promise.all([
       getCredential(credId),
-      getAttestors(credId),
       isExpired(credId).catch(() => false),
     ]);
 
     const isRevoked = credential.revoked;
-    const metaStr = decodeMetadataHash(credential.metadata_hash);
-    
+    const metaStr   = decodeMetadataHash(credential.metadata_hash);
+
+    // Fetch slice data and attestation status if a sliceId is known
+    let attested = false;
+    let slice    = null;
+    if (sliceId) {
+      [attested, slice] = await Promise.all([
+        isAttested(credId, sliceId).catch(() => false),
+        getSlice(sliceId).catch(() => null),
+      ]);
+    } else {
+      // Fallback: use attestor count as proxy (no slice context)
+      const attestors = await getAttestors(credId).catch(() => []);
+      attested = attestors.length > 0;
+    }
+
+    // Determine status
     let statusClass, statusLabel, statusIcon;
     if (isRevoked) {
       statusClass = 'revoked'; statusIcon = '🚫'; statusLabel = 'Revoked';
     } else if (expired) {
       statusClass = 'expired'; statusIcon = '⏰'; statusLabel = 'Expired';
-    } else if (attestors.length === 0) {
-      statusClass = 'pending'; statusIcon = '⏳'; statusLabel = 'Pending Attestation';
+    } else if (attested) {
+      statusClass = 'valid';   statusIcon = '✅'; statusLabel = 'Attested';
     } else {
-      statusClass = 'valid'; statusIcon = '✅'; statusLabel = 'Attested';
+      statusClass = 'pending'; statusIcon = '⏳'; statusLabel = 'Pending Attestation';
     }
 
-    // Remove skeleton class
     cardEl.classList.remove('skeleton-loader');
-    
     cardEl.innerHTML = `
       <div class="cred-card__header cred-card__header--${statusClass}">
         <div class="cred-card__type">${credTypeLabel(credential.credential_type)}</div>
-        <div class="badge badge--${statusClass}">
+        <div class="badge badge--${statusClass === 'valid' ? 'green' : statusClass === 'revoked' ? 'red' : statusClass === 'expired' ? 'yellow' : 'blue'}">
           ${statusIcon} ${statusLabel}
         </div>
       </div>
-      
+
       <div class="cred-card__body">
         <h3 class="cred-card__id">Credential #${credential.id}</h3>
-        
+
         <div class="cred-card__meta">
           <div class="meta-row">
             <span class="meta-label">Issuer</span>
@@ -251,39 +316,25 @@ async function renderDashboardCard(credId, cardEl) {
             <span class="meta-label">Expires</span>
             <span class="meta-value">${formatTimestamp(credential.expires_at)}</span>
           </div>` : ''}
+          ${sliceId ? `
+          <div class="meta-row">
+            <span class="meta-label">Slice</span>
+            <span class="meta-value mono">#${sliceId}</span>
+          </div>` : ''}
         </div>
 
-        <div class="cred-card__attestors">
-          <div class="attestors-header">
-            <span class="meta-label">Quorum Slice Attestors</span>
-            <span class="badge badge--${attestors.length > 0 ? 'gray' : 'red'}" style="font-size:10px;">
-              ${attestors.length} Node${attestors.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-          
-          ${attestors.length === 0 
-            ? `<div class="attestors-empty">Awaiting slice signatures</div>`
-            : `<div class="attestor-mini-list">
-                 ${attestors.map(addr => `
-                   <div class="attestor-mini-item">
-                     <span>🏛️</span>
-                     <span class="mono" title="${addr}">${formatAddress(addr)}</span>
-                   </div>
-                 `).join('')}
-               </div>`
-          }
-        </div>
+        ${renderSliceSection(slice, sliceId)}
       </div>
-      
+
       <div class="cred-card__footer">
-        <a href="/verify?credentialId=${credential.id}" class="btn btn--sm btn--ghost" style="width:100%;" data-route="/verify?credentialId=${credential.id}">
+        <a href="/verify?credentialId=${credential.id}" class="btn btn--sm btn--ghost"
+           style="width:100%;" data-route="/verify?credentialId=${credential.id}">
           View Public Page →
         </a>
       </div>
     `;
 
-    // Bind the public page link to SPA router
-    cardEl.querySelector('a').addEventListener('click', (e) => {
+    cardEl.querySelector('a[data-route]').addEventListener('click', e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey) return;
       e.preventDefault();
       navigateTo(`/verify?credentialId=${credential.id}`);
@@ -292,11 +343,105 @@ async function renderDashboardCard(credId, cardEl) {
   } catch (err) {
     cardEl.classList.remove('skeleton-loader');
     cardEl.innerHTML = `
-      <div class="cred-card__body" style="justify-content:center; align-items:center; text-align:center;">
+      <div class="cred-card__body" style="justify-content:center; align-items:center; text-align:center; padding:32px;">
         <div style="font-size:24px; margin-bottom:8px;">⚠️</div>
-        <div style="color:var(--red); font-size:13px;">Failed to load data</div>
+        <div style="color:var(--red); font-size:13px;">Failed to load</div>
         <div style="color:var(--text-muted); font-size:11px; margin-top:4px;">${err.message}</div>
       </div>
     `;
   }
+}
+
+// ── Quorum Slice Section ──────────────────────────────────────────────────────
+function renderSliceSection(slice, sliceId) {
+  if (!slice) {
+    return `
+      <div class="cred-card__attestors">
+        <div class="attestors-header">
+          <span class="meta-label">Quorum Slice</span>
+          ${sliceId
+            ? `<span class="badge badge--gray" style="font-size:10px;">Slice #${sliceId}</span>`
+            : `<span class="badge badge--gray" style="font-size:10px;">No slice</span>`}
+        </div>
+        <div class="attestors-empty">No slice data available</div>
+      </div>
+    `;
+  }
+
+  const attestors  = Array.isArray(slice.attestors) ? slice.attestors : [];
+  const threshold  = Number(slice.threshold);
+  const total      = attestors.length;
+  const progress   = Math.min(total, threshold);
+
+  return `
+    <div class="cred-card__attestors">
+      <div class="attestors-header">
+        <span class="meta-label">Quorum Slice #${slice.id}</span>
+        <span class="badge badge--gray" style="font-size:10px;">
+          ${progress}/${threshold} threshold
+        </span>
+      </div>
+
+      <div class="slice-progress" title="${progress} of ${threshold} required attestors">
+        <div class="slice-progress__bar" style="width:${threshold > 0 ? Math.round((progress / threshold) * 100) : 0}%"></div>
+      </div>
+
+      ${attestors.length === 0
+        ? `<div class="attestors-empty">No attestors in this slice</div>`
+        : `<div class="attestor-mini-list">
+             ${attestors.map((addr, i) => `
+               <div class="attestor-mini-item">
+                 <span class="attestor-mini-item__avatar">${i + 1}</span>
+                 <div class="attestor-mini-item__info">
+                   <span class="mono" title="${addr}">${formatAddress(addr)}</span>
+                   <span class="attestor-mini-item__role">${attestorRole(i)}</span>
+                 </div>
+               </div>
+             `).join('')}
+           </div>`
+      }
+
+      <div class="slice-creator">
+        <span class="meta-label">Creator</span>
+        <span class="mono" style="font-size:11px; color:var(--text-muted);" title="${slice.creator}">
+          ${formatAddress(slice.creator)}
+        </span>
+      </div>
+    </div>
+  `;
+}
+
+// ── Empty State ───────────────────────────────────────────────────────────────
+function renderEmptyState() {
+  return `
+    <div class="empty-state empty-state--dashboard">
+      <div class="empty-state__icon">📭</div>
+      <div class="empty-state__title">No credentials yet</div>
+      <p class="empty-state__body">
+        You haven't been issued any verifiable credentials.<br>
+        Request issuance from a trusted institution to get started.
+      </p>
+      <div class="empty-state__actions">
+        <button class="btn btn--primary" id="btn-request-issuance">
+          ✦ Request Credential Issuance
+        </button>
+        <a href="/verify" class="btn btn--ghost" data-route="/verify">
+          Verify an existing credential
+        </a>
+      </div>
+    </div>
+  `;
+}
+
+function bindEmptyStateCTA(contentEl) {
+  contentEl.querySelector('#btn-request-issuance')?.addEventListener('click', () => {
+    // Placeholder: in a real app this would open a modal or navigate to a request form
+    alert('Credential issuance request flow coming soon.\nContact your institution with your Stellar address.');
+  });
+
+  contentEl.querySelector('a[data-route]')?.addEventListener('click', e => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    navigateTo('/verify');
+  });
 }

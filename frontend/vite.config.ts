@@ -1,14 +1,20 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// https://vite.dev/config/
 export default defineConfig({
-  plugins: [
-    react(),
-    nodePolyfills({
-      include: ['buffer'],
-      globals: { Buffer: true }
-    })
-  ],
-})
+  plugins: [react()],
+  optimizeDeps: {
+    include: ["@stellar/stellar-sdk"],
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+    },
+  },
+  define: {
+    global: "globalThis",
+  },
+  server: {
+    port: 5173,
+  },
+});

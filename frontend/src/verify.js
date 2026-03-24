@@ -36,6 +36,21 @@ function credTypeLabel(n) {
   return CREDENTIAL_TYPES[Number(n)] || `Type ${n}`;
 }
 
+/**
+ * Derive the verification status from credential flags.
+ * Priority: revoked → expired → pending (0 attestors) → verified
+ * @param {boolean} revoked
+ * @param {boolean} expired
+ * @param {number} attestorCount
+ * @returns {'revoked'|'expired'|'pending'|'verified'}
+ */
+export function deriveStatus(revoked, expired, attestorCount) {
+  if (revoked) return 'revoked';
+  if (expired) return 'expired';
+  if (attestorCount === 0) return 'pending';
+  return 'verified';
+}
+
 // ── Format timestamps ────────────────────────────────────────────────────────
 function formatTimestamp(ts) {
   if (!ts) return 'Never';
@@ -277,7 +292,13 @@ export function renderVerifyPage(container) {
   inputAddr.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleVerifyByAddr(); });
 
   // ── Auto-verify if credentialId in query param ────────────────────────────
-  if (prefilledId && !isNaN(prefilledId) && Number(prefilledId) > 0) {
+  const parsedId = parseInt(prefilledId, 10);
+  const isValidQueryId = prefilledId.trim() !== '' &&
+    parsedId > 0 &&
+    isFinite(parsedId) &&
+    String(parsedId) === prefilledId.trim();
+
+  if (isValidQueryId) {
     // Trigger after DOM is ready
     setTimeout(() => handleVerifyById(), 50);
   }
@@ -298,16 +319,17 @@ export function renderVerifyPage(container) {
     const expiresAt = credential.expires_at;
 
     // Determine overall status
+    const status = deriveStatus(isRevoked, expired, attestors.length);
     let statusClass, statusIcon, statusTitle, statusSub;
-    if (isRevoked) {
+    if (status === 'revoked') {
       statusClass = 'revoked'; statusIcon = '🚫';
       statusTitle = 'Credential Revoked';
       statusSub = 'This credential has been officially revoked by the subject or issuer.';
-    } else if (expired) {
+    } else if (status === 'expired') {
       statusClass = 'expired'; statusIcon = '⏰';
       statusTitle = 'Credential Expired';
       statusSub = `This credential expired on ${formatTimestamp(expiresAt)}.`;
-    } else if (attestors.length === 0) {
+    } else if (status === 'pending') {
       statusClass = 'pending'; statusIcon = '⏳';
       statusTitle = 'Awaiting Attestation';
       statusSub = 'No attestors have signed this credential yet.';
@@ -462,6 +484,25 @@ export function renderVerifyPage(container) {
 
 // ── ZK Claim Form ─────────────────────────────────────────────────────────
 function buildZkClaimHTML(credId) {
+  const zkNotConfigured = !import.meta.env.VITE_CONTRACT_ZK_VERIFIER;
+  if (zkNotConfigured) {
+    return `
+      <div class="zk-card">
+        <div class="zk-card__header">
+          <span class="zk-card__icon">🔐</span>
+          <div>
+            <div class="zk-card__title">Zero-Knowledge Claim Verification</div>
+            <div class="zk-card__sub">Verify a specific claim without revealing the full credential</div>
+          </div>
+        </div>
+        <div class="zk-card__body">
+          <div class="badge badge--red" style="font-size:13px;padding:10px 14px;">
+            ⚠ ZK Verifier contract not configured. Set VITE_CONTRACT_ZK_VERIFIER in your .env file.
+          </div>
+        </div>
+      </div>`;
+  }
+
   return `
     <div class="zk-card">
       <div class="zk-card__header">
@@ -475,19 +516,10 @@ function buildZkClaimHTML(credId) {
         <div class="form-row">
           <label class="form-label" for="zk-claim-type">Claim Type</label>
           <select id="zk-claim-type" style="padding-left:16px;">
-            <option value="has_degree">🎓 Has Engineering Degree</option>
-            <option value="license_valid">🏛️ License Is Valid</option>
-            <option value="employer_verified">💼 Employer Verified</option>
-            <option value="certification_active">📜 Certification Active</option>
-            <option value="custom">✏️ Custom claim type…</option>
+            <option value="HasDegree">🎓 Has Engineering Degree</option>
+            <option value="HasLicense">🏛️ License Is Valid</option>
+            <option value="HasEmploymentHistory">💼 Employer Verified</option>
           </select>
-        </div>
-        <div class="form-row" id="zk-custom-row" style="display:none;">
-          <label class="form-label" for="zk-custom-type">Custom Claim Type</label>
-          <div class="input-wrap">
-            <span class="input-icon">✏️</span>
-            <input id="zk-custom-type" type="text" placeholder="e.g. masters_degree" />
-          </div>
         </div>
         <div class="form-row">
           <label class="form-label" for="zk-proof">ZK Proof (hex-encoded bytes)</label>
@@ -508,16 +540,10 @@ function buildZkClaimHTML(credId) {
 
 function wireZkForm(container, credId) {
   const claimTypeEl = container.querySelector('#zk-claim-type');
-  const customRow   = container.querySelector('#zk-custom-row');
-  const customInput = container.querySelector('#zk-custom-type');
   const proofEl     = container.querySelector('#zk-proof');
   const btnVerify   = container.querySelector('#btn-zk-verify');
   const btnClear    = container.querySelector('#btn-zk-clear');
   const resultEl    = container.querySelector('#zk-result');
-
-  claimTypeEl?.addEventListener('change', () => {
-    customRow.style.display = claimTypeEl.value === 'custom' ? '' : 'none';
-  });
 
   btnClear?.addEventListener('click', () => {
     proofEl.value = '';
@@ -525,14 +551,7 @@ function wireZkForm(container, credId) {
   });
 
   btnVerify?.addEventListener('click', async () => {
-    let claimType = claimTypeEl.value;
-    if (claimType === 'custom') {
-      claimType = customInput.value.trim();
-      if (!claimType) {
-        resultEl.innerHTML = zkResultHTML('error', '⚠️ Please enter a custom claim type.');
-        return;
-      }
-    }
+    const claimType = claimTypeEl.value; // already a valid enum string
 
     const proofHex = proofEl.value.trim().replace(/\s/g, '');
     if (!proofHex) {
@@ -547,9 +566,9 @@ function wireZkForm(container, credId) {
     try {
       const result = await verifyClaim(credId, claimType, proofHex);
       if (result) {
-        resultEl.innerHTML = zkResultHTML('success', `✅ Claim "${claimType}" is valid for credential #${credId}.`);
+        resultEl.innerHTML = zkResultHTML('success', `✅ Claim Verified`, 'This claim was proven cryptographically without revealing the full credential details.');
       } else {
-        resultEl.innerHTML = zkResultHTML('fail', `❌ Claim "${claimType}" could not be verified for credential #${credId}.`);
+        resultEl.innerHTML = zkResultHTML('fail', `❌ Claim Not Verified`, 'The submitted proof did not satisfy the claim. No credential data was revealed.');
       }
     } catch (err) {
       const msg = err.message || 'ZK verification failed.';
@@ -566,6 +585,6 @@ function wireZkForm(container, credId) {
   });
 }
 
-function zkResultHTML(type, msg) {
-  return `<div class="zk-result zk-result--${type}" role="alert">${msg}</div>`;
+function zkResultHTML(type, msg, tooltip = '') {
+  return `<div class="zk-result zk-result--${type}" role="alert"${tooltip ? ` title="${tooltip}"` : ''}>${msg}</div>`;
 }
