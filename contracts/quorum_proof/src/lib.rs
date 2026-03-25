@@ -67,6 +67,15 @@ pub enum DataKey {
     Attestors(u64),
     SubjectCredentials(Address),
     AttestorCount(Address),
+    CredentialType(u32),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CredentialTypeDef {
+    pub type_id: u32,
+    pub name: soroban_sdk::String,
+    pub description: soroban_sdk::String,
 }
 
 #[contracttype]
@@ -469,6 +478,29 @@ impl QuorumProofContract {
         // 2. Verify the ZK claim proof
         let zk_client = ZkVerifierContractClient::new(&env, &zk_verifier_id);
         zk_client.verify_claim(&credential_id, &claim_type, &proof)
+    }
+
+    /// Register a human-readable label for a credential type. Admin-only by convention
+    /// (caller must auth). Overwrites any existing entry for the same type_id.
+    pub fn register_credential_type(
+        env: Env,
+        admin: Address,
+        type_id: u32,
+        name: soroban_sdk::String,
+        description: soroban_sdk::String,
+    ) {
+        admin.require_auth();
+        let def = CredentialTypeDef { type_id, name, description };
+        env.storage().instance().set(&DataKey::CredentialType(type_id), &def);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Look up the registered name and description for a credential type.
+    pub fn get_credential_type(env: Env, type_id: u32) -> CredentialTypeDef {
+        env.storage()
+            .instance()
+            .get(&DataKey::CredentialType(type_id))
+            .expect("credential type not registered")
     }
 }
 
@@ -1443,6 +1475,54 @@ mod tests {
         hashes.push_back(Bytes::from_slice(&env, b"ipfs://Qm2"));
 
         client.batch_issue_credentials(&issuer, &subjects, &cred_types, &hashes, &None);
+    }
+
+    #[test]
+    fn test_register_and_get_credential_type() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let name = soroban_sdk::String::from_str(&env, "Mechanical Engineering Degree");
+        let desc = soroban_sdk::String::from_str(&env, "Bachelor or higher in Mechanical Engineering");
+
+        client.register_credential_type(&admin, &1u32, &name, &desc);
+
+        let def = client.get_credential_type(&1u32);
+        assert_eq!(def.type_id, 1u32);
+        assert_eq!(def.name, name);
+        assert_eq!(def.description, desc);
+    }
+
+    #[test]
+    #[should_panic(expected = "credential type not registered")]
+    fn test_get_credential_type_not_registered_panics() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        client.get_credential_type(&99u32);
+    }
+
+    #[test]
+    fn test_register_credential_type_overwrites() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let name_v1 = soroban_sdk::String::from_str(&env, "Old Name");
+        let name_v2 = soroban_sdk::String::from_str(&env, "New Name");
+        let desc = soroban_sdk::String::from_str(&env, "desc");
+
+        client.register_credential_type(&admin, &1u32, &name_v1, &desc);
+        client.register_credential_type(&admin, &1u32, &name_v2, &desc);
+
+        let def = client.get_credential_type(&1u32);
+        assert_eq!(def.name, name_v2);
     }
 }
 
