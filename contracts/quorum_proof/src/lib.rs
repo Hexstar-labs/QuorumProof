@@ -49,6 +49,14 @@ pub struct IssueEventData {
 const STANDARD_TTL: u32 = 16_384;
 const EXTENDED_TTL: u32 = 524_288;
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    CredentialNotFound = 1,
+    SliceNotFound = 2,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -262,12 +270,12 @@ impl QuorumProofContract {
         id
     }
 
-    /// Retrieve a quorum slice by ID.
+    /// Retrieve a quorum slice by ID. Panics with ContractError::SliceNotFound if missing.
     pub fn get_slice(env: Env, slice_id: u64) -> QuorumSlice {
         env.storage()
             .instance()
             .get(&DataKey::Slice(slice_id))
-            .expect("slice not found")
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SliceNotFound))
     }
 
     /// Add a new attestor to an existing quorum slice.
@@ -792,6 +800,16 @@ mod tests {
         let client = QuorumProofContractClient::new(&env, &contract_id);
         // credential ID 999 was never issued — should panic with ContractError::CredentialNotFound
         client.get_credential(&999u64);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_get_slice_not_found() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+        // slice ID 999 was never issued — should panic with ContractError::SliceNotFound
+        client.get_slice(&999u64);
     }
 
     #[test]
