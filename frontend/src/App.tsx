@@ -1,19 +1,61 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Dashboard } from './pages/Dashboard';
-import { Verify } from './pages/Verify';
-import { QuorumSlice } from './pages/QuorumSlice';
+import React, { Suspense, lazy } from 'react';
+import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
+import { AppLayout } from './components/AppLayout';
+import { useFreighter } from './lib/hooks/useFreighter';
 import './styles.css';
 import './index.css';
+
+// Lazy load pages
+const Dashboard = lazy(() => import('./pages/Dashboard').then(module => ({ default: module.default })));
+const Verify = lazy(() => import('./pages/Verify').then(module => ({ default: module.default })));
+const QuorumSlice = lazy(() => import('./pages/QuorumSlice').then(module => ({ default: module.default })));
+const CredentialDetail = lazy(() => import('./pages/CredentialDetail').then(module => ({ default: module.default })));
+
+// Loading fallback
+const LoadingFallback = () => (
+  <div className="flex items-center justify-center h-full">
+    <div className="text-slate-400">Loading...</div>
+  </div>
+);
+
+// 404 component
+const NotFound = () => (
+  <div className="flex flex-col items-center justify-center h-full">
+    <h1 className="text-2xl font-bold text-slate-100 mb-4">Page not found</h1>
+    <p className="text-slate-400 mb-4">The page you're looking for doesn't exist.</p>
+    <a href="/" className="text-indigo-400 hover:text-indigo-300">Go back to home</a>
+  </div>
+);
+
+function AppContent() {
+  const location = useLocation();
+  const { address, connect } = useFreighter();
+
+  return (
+    <AppLayout
+      currentPath={location.pathname}
+      walletAddress={address}
+      onConnectWallet={connect}
+      network="Testnet"
+    >
+      <Suspense fallback={<LoadingFallback />}>
+        <Routes>
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/verify" element={<Verify />} />
+          <Route path="/slice/new" element={<QuorumSlice />} />
+          <Route path="/credential/:id" element={<CredentialDetail />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </AppLayout>
+  );
+}
 
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/verify" element={<Verify />} />
-        <Route path="/slice" element={<QuorumSlice />} />
-      </Routes>
+      <AppContent />
     </BrowserRouter>
   );
 }

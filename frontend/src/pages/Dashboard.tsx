@@ -14,7 +14,7 @@ import {
 } from '../stellar';
 import { type CredCardData } from '../lib/credentialUtils';
 
-export function Dashboard() {
+export default function Dashboard() {
   const { address, hasFreighter, isInitializing, connect, disconnect } = useFreighter();
   const [cards, setCards] = useState<CredCardData[]>([]);
   const [loading, setLoading] = useState(false);

@@ -222,7 +222,7 @@ function CredentialResult({ credential, attestors, expired, attested }: VerifyRe
 }
 
 
-export function Verify() {
+export default function Verify() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<'id' | 'addr'>('id');
   const [credInput, setCredInput] = useState(searchParams.get('id') || '');

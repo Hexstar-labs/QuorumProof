@@ -11,10 +11,14 @@
     "test": "vitest --run"
   },
   "dependencies": {
+    "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.6.1",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.8",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.13.2"
+    "react-router-dom": "^7.13.2",
+    "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

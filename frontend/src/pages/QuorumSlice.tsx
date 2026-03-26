@@ -7,7 +7,7 @@ function formatAddress(addr: string) {
   return addr.slice(0, 8) + '…' + addr.slice(-6);
 }
 
-export function QuorumSlice() {
+export default function QuorumSlice() {
   const { address, isInitializing, connect, hasFreighter } = useFreighter();
 
   return (
