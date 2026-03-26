@@ -3,7 +3,7 @@ import { Navbar } from '../components/Navbar';
 import { WalletGate } from '../components/WalletGate';
 import { CredentialCard } from '../components/CredentialCard';
 import { EmptyState } from '../components/EmptyState';
-import { useFreighter } from '../lib/hooks/useFreighter';
+import { useWallet } from '../hooks';
 import {
   getCredentialsBySubject,
   getCredential,
@@ -15,7 +15,7 @@ import {
 import { type CredCardData } from '../lib/credentialUtils';
 
 export default function Dashboard() {
-  const { address, hasFreighter, isInitializing, connect, disconnect } = useFreighter();
+  const { address, hasFreighter, isInitializing, connect, disconnect } = useWallet();
   const [cards, setCards] = useState<CredCardData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

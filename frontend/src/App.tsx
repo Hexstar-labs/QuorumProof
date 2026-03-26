@@ -1,7 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AppLayout } from './components/AppLayout';
-import { useFreighter } from './lib/hooks/useFreighter';
+import { useWallet } from './hooks';
 import './styles.css';
 import './index.css';
 
@@ -29,14 +29,14 @@ const NotFound = () => (
 
 function AppContent() {
   const location = useLocation();
-  const { address, connect } = useFreighter();
+  const { address, connect, network } = useWallet();
 
   return (
     <AppLayout
       currentPath={location.pathname}
       walletAddress={address}
       onConnectWallet={connect}
-      network="Testnet"
+      network={network}
     >
       <Suspense fallback={<LoadingFallback />}>
         <Routes>
