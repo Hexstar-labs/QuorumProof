@@ -33,6 +33,12 @@ export function Navbar() {
           >
             Verify
           </Link>
+          <Link
+            to="/issue"
+            className={`nav-link${location.pathname === '/issue' ? ' active' : ''}`}
+          >
+            Issue
+          </Link>
         </div>
 
         <div className="navbar__right">
