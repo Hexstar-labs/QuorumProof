@@ -2022,4 +2022,30 @@ mod tests {
         let not_verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &subject, &cred_id, &ClaimType::HasDegree, &empty_proof);
         assert!(!not_verified);
     }
+
+    // Issue #45: attest by address not in slice should panic
+    #[test]
+    #[should_panic(expected = "attestor not in slice")]
+    fn test_attest_by_non_member_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor1 = Address::generate(&env);
+        let attestor2 = Address::generate(&env); // not in slice
+
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        // Create slice with only attestor1
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(attestor1.clone());
+        let slice_id = client.create_slice(&issuer, &attestors, &1u32);
+
+        // attestor2 is not in the slice — must panic
+        client.attest(&attestor2, &cred_id, &slice_id);
+    }
 }
