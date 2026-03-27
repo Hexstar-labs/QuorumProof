@@ -1427,6 +1427,39 @@ mod tests {
 
         assert_eq!(client.get_slice_count(), 2);
     }
+<<<<<<< issue-47-revoke-prevents-attestation
+
+    // Issue #47: revoke_credential prevents further attestation
+    #[test]
+    #[should_panic(expected = "credential is revoked")]
+    fn test_revoke_credential_prevents_attestation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(&env, &contract_id);
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+
+        // Issue a credential
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        // Set up a quorum slice with the attestor
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let slice_id = client.create_slice(&issuer, &attestors, &1u32);
+
+        // Revoke the credential
+        client.revoke_credential(&issuer, &cred_id);
+
+        // Attempting to attest a revoked credential must panic
+        client.attest(&attestor, &cred_id, &slice_id);
+    }
+}
+=======
+>>>>>>> main
 
     #[test]
     fn test_get_attestation_count() {
