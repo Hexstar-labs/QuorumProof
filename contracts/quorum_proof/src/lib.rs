@@ -323,11 +323,14 @@ impl QuorumProofContract {
     }
 
     /// Revoke a credential. Only the original issuer can revoke.
+    /// Panics with ContractError::CredentialNotFound if missing.
     /// Panics with "credential has expired" if the credential is expired.
     pub fn revoke_credential(env: Env, issuer: Address, credential_id: u64) {
         issuer.require_auth();
         Self::require_not_paused(&env);
-        let mut credential: Credential = env.storage().instance().get(&DataKey::Credential(credential_id)).expect("credential not found");
+        let mut credential: Credential = env.storage().instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
         assert!(issuer == credential.issuer, "only the original issuer can revoke");
         assert!(!credential.revoked, "credential already revoked");
         if let Some(expires_at) = credential.expires_at {
@@ -508,6 +511,7 @@ impl QuorumProofContract {
     }
 
     /// Attest a credential using a quorum slice.
+    /// Panics with ContractError::CredentialNotFound if missing.
     pub fn attest(env: Env, attestor: Address, credential_id: u64, slice_id: u64) {
         attestor.require_auth();
         Self::require_not_paused(&env);
@@ -515,7 +519,7 @@ impl QuorumProofContract {
             .storage()
             .instance()
             .get(&DataKey::Credential(credential_id))
-            .expect("credential not found");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
         assert!(!credential.revoked, "credential is revoked");
         let slice: QuorumSlice = env
             .storage()
@@ -582,12 +586,14 @@ impl QuorumProofContract {
     /// - If both attestors have signed: attested (30 + 20 = 50 >= 50)
     ///
     /// Returns false if the credential is revoked or expired.
+    /// Check if a credential is attested by a quorum slice.
+    /// Panics with ContractError::CredentialNotFound if missing.
     pub fn is_attested(env: Env, credential_id: u64, slice_id: u64) -> bool {
         let credential: Credential = env
             .storage()
             .instance()
             .get(&DataKey::Credential(credential_id))
-            .expect("credential not found");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
         if credential.revoked {
             return false;
         }
@@ -633,12 +639,13 @@ impl QuorumProofContract {
     }
 
     /// Returns true if the credential exists and its expiry timestamp has passed.
+    /// Panics with ContractError::CredentialNotFound if missing.
     pub fn is_expired(env: Env, credential_id: u64) -> bool {
         let credential: Credential = env
             .storage()
             .instance()
             .get(&DataKey::Credential(credential_id))
-            .expect("credential not found");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
         match credential.expires_at {
             Some(expires_at) => env.ledger().timestamp() >= expires_at,
             None => false,
@@ -1018,24 +1025,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "CredentialNotFound")]
     fn test_get_credential_not_found() {
         let env = Env::default();
-        env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
         let client = QuorumProofContractClient::new(&env, &contract_id);
 
-        let creator = Address::generate(&env);
-        let mut attestors = Vec::new(&env);
-        for _ in 0..MAX_ATTESTORS_PER_SLICE {
-            attestors.push_back(Address::generate(&env));
-        }
-        let mut weights = Vec::new(&env);
-        for _ in 0..MAX_ATTESTORS_PER_SLICE {
-            weights.push_back(1u32);
-        }
-        let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
-        client.add_attestor(&creator, &slice_id, &Address::generate(&env), &1u32);
+        // Try to get a credential that doesn't exist
+        client.get_credential(&999u64);
     }
 
     // --- revocation ---
@@ -1184,9 +1181,11 @@ mod tests {
     #[should_panic(expected = "threshold must be greater than 0")]
     fn test_zero_threshold_rejection() {
         let env = Env::default();
+        env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
         let client = QuorumProofContractClient::new(&env, &contract_id);
-        client.get_credential(&999u64);
+        // Create slice with empty vectors to trigger zero threshold panic
+        client.create_slice(&Address::generate(&env), &Vec::new(&env), &Vec::new(&env), &0u32);
     }
 
     #[test]
