@@ -38,7 +38,19 @@ pub struct SbtRegistryContract;
 #[contractimpl]
 impl SbtRegistryContract {
     /// Mint a soulbound token linked to a credential_id.
-    /// Panics if an SBT already exists for this (owner, credential_id).
+    ///
+    /// Creates a non-transferable token bound to the `owner` address and associated
+    /// with the given `credential_id`. Each `(owner, credential_id)` pair may only
+    /// have one SBT — attempting to mint a duplicate panics.
+    ///
+    /// # Parameters
+    /// - `owner`: The address receiving the SBT; must authorize this call.
+    /// - `credential_id`: The credential this SBT is linked to.
+    /// - `metadata_uri`: Content-addressed URI (e.g. IPFS) for the token metadata.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::SoulboundNonTransferable` if an SBT already exists
+    /// for this `(owner, credential_id)` pair.
     pub fn mint(env: Env, owner: Address, credential_id: u64, metadata_uri: Bytes) -> u64 {
         owner.require_auth();
         if env.storage().instance().has(&DataKey::OwnerCredential(owner.clone(), credential_id)) {
@@ -67,14 +79,35 @@ impl SbtRegistryContract {
         token_id
     }
 
+    /// Retrieve a soulbound token by its ID.
+    ///
+    /// # Parameters
+    /// - `token_id`: The ID of the token to retrieve.
+    ///
+    /// # Panics
+    /// Panics with "token not found" if no token exists with that ID.
     pub fn get_token(env: Env, token_id: u64) -> SoulboundToken {
         env.storage().persistent().get(&DataKey::Token(token_id)).expect("token not found")
     }
 
+    /// Returns the owner address of a token.
+    ///
+    /// # Parameters
+    /// - `token_id`: The ID of the token to query.
+    ///
+    /// # Panics
+    /// Panics with "token not found" if no token exists with that ID.
     pub fn owner_of(env: Env, token_id: u64) -> Address {
         env.storage().persistent().get(&DataKey::Owner(token_id)).expect("token not found")
     }
 
+    /// Returns all token IDs owned by the given address.
+    ///
+    /// # Parameters
+    /// - `owner`: The address whose tokens to list.
+    ///
+    /// # Panics
+    /// Does not panic; returns an empty `Vec` if the owner holds no tokens.
     pub fn get_tokens_by_owner(env: Env, owner: Address) -> Vec<u64> {
         env.storage().persistent().get(&DataKey::OwnerTokens(owner)).unwrap_or(Vec::new(&env))
     }
