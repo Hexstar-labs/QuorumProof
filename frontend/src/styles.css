@@ -268,6 +268,11 @@ body::before {
 .cred-card__header--revoked { background: linear-gradient(135deg, rgba(239,68,68,0.08), transparent); border-bottom-color: rgba(239,68,68,0.2); }
 .cred-card__header--expired { background: linear-gradient(135deg, rgba(245,158,11,0.08), transparent); border-bottom-color: rgba(245,158,11,0.2); }
 
+.cred-card--revoked {
+  opacity: 0.6;
+  filter: grayscale(0.4);
+}
+
 .cred-card__type {
   font-weight: 600;
   font-size: 13px;
