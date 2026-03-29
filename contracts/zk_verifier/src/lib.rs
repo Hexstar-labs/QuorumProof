@@ -38,15 +38,40 @@ impl ZkVerifierContract {
     }
 
     /// Verify a ZK proof for a claim.
-    /// Stub: returns true if proof is non-empty. Replace with real ZK logic in v1.1.
+    ///
+    /// # ⚠️ STUB IMPLEMENTATION — NOT PRODUCTION READY ⚠️
+    ///
+    /// This function is a placeholder. It accepts any non-empty `Bytes` value as a
+    /// valid proof and provides **zero cryptographic security or privacy guarantees**.
+    ///
+    /// This function is gated behind admin authorization until real ZK verification
+    /// is implemented in v1.1. Only the admin address stored at initialization may
+    /// invoke this function.
+    ///
+    /// Tracking issue: implement real ZK proof verification (Groth16 / PLONK on Soroban).
     pub fn verify_claim(
-        _env: Env,
+        env: Env,
+        admin: Address,
         _quorum_proof_id: Address,
         _credential_id: u64,
         _claim_type: ClaimType,
         proof: Bytes,
     ) -> bool {
+        // Admin gate: real ZK is not implemented; restrict to authorized callers only.
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        // STUB: any non-empty proof passes. Replace with real ZK logic in v1.1.
         !proof.is_empty()
+    }
+
+    /// Set the admin address once after deployment.
+    pub fn initialize(env: Env, admin: Address) {
+        assert!(!env.storage().instance().has(&DataKey::Admin), "already initialized");
+        env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
     /// Admin-only contract upgrade to new WASM.
@@ -56,46 +81,90 @@ impl ZkVerifierContract {
     }
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    Admin,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Bytes, Env};
 
+    fn setup(env: &Env) -> (ZkVerifierContractClient, Address) {
+        let contract_id = env.register_contract(None, ZkVerifierContract);
+        let client = ZkVerifierContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        client.initialize(&admin);
+        (client, admin)
+    }
+
     #[test]
     fn test_verify_claim_degree_success() {
         let env = Env::default();
         env.mock_all_auths();
-        let zk_id = env.register_contract(None, ZkVerifierContract);
-        let client = ZkVerifierContractClient::new(&env, &zk_id);
+        let (client, admin) = setup(&env);
         let qp_id = Address::generate(&env);
 
         let proof = Bytes::from_slice(&env, b"valid-proof");
-        assert!(client.verify_claim(&qp_id, &1u64, &ClaimType::HasDegree, &proof));
+        assert!(client.verify_claim(&admin, &qp_id, &1u64, &ClaimType::HasDegree, &proof));
     }
 
     #[test]
     fn test_verify_claim_revoked_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        let zk_id = env.register_contract(None, ZkVerifierContract);
-        let client = ZkVerifierContractClient::new(&env, &zk_id);
+        let (client, admin) = setup(&env);
         let qp_id = Address::generate(&env);
 
         let proof = Bytes::new(&env);
-        assert!(!client.verify_claim(&qp_id, &1u64, &ClaimType::HasDegree, &proof));
+        assert!(!client.verify_claim(&admin, &qp_id, &1u64, &ClaimType::HasDegree, &proof));
     }
 
     #[test]
     fn test_verify_claim_wrong_type_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        let zk_id = env.register_contract(None, ZkVerifierContract);
-        let client = ZkVerifierContractClient::new(&env, &zk_id);
+        let (client, admin) = setup(&env);
         let qp_id = Address::generate(&env);
 
         let proof = Bytes::new(&env);
-        assert!(!client.verify_claim(&qp_id, &1u64, &ClaimType::HasLicense, &proof));
+        assert!(!client.verify_claim(&admin, &qp_id, &1u64, &ClaimType::HasLicense, &proof));
+    }
+
+    /// Documents stub behavior: any non-empty bytes passes, empty bytes fails.
+    /// This test must be removed when real ZK is implemented.
+    #[test]
+    fn test_verify_claim_stub_behavior_any_nonempty_bytes_passes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let qp_id = Address::generate(&env);
+
+        // STUB: these are not real ZK proofs — they pass only because they are non-empty.
+        let fake_proof = Bytes::from_slice(&env, b"not-a-real-zk-proof");
+        assert!(client.verify_claim(&admin, &qp_id, &1u64, &ClaimType::HasDegree, &fake_proof),
+            "STUB: non-empty bytes should pass until real ZK is implemented");
+
+        let empty_proof = Bytes::new(&env);
+        assert!(!client.verify_claim(&admin, &qp_id, &1u64, &ClaimType::HasDegree, &empty_proof),
+            "STUB: empty bytes should fail");
+    }
+
+    /// Non-admin callers must be rejected.
+    #[test]
+    #[should_panic]
+    fn test_verify_claim_non_admin_panics() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (client, _admin) = setup(&env);
+        let non_admin = Address::generate(&env);
+        let qp_id = Address::generate(&env);
+        let proof = Bytes::from_slice(&env, b"proof");
+        // non_admin is not the stored admin — should panic with "unauthorized"
+        client.verify_claim(&non_admin, &qp_id, &1u64, &ClaimType::HasDegree, &proof);
     }
 
     #[test]

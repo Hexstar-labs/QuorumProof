@@ -918,6 +918,7 @@ impl QuorumProofContract {
     pub fn verify_claim_batch(
         env: Env,
         zk_verifier_id: Address,
+        zk_admin: Address,
         quorum_proof_id: Address,
         credential_id: u64,
         claim_types: Vec<zk_verifier::ClaimType>,
@@ -931,6 +932,7 @@ impl QuorumProofContract {
         let mut results: Vec<bool> = Vec::new(&env);
         for i in 0..claim_types.len() {
             let result = zk_client.verify_claim(
+                &zk_admin,
                 &quorum_proof_id,
                 &credential_id,
                 &claim_types.get(i).unwrap(),
@@ -1005,6 +1007,7 @@ impl QuorumProofContract {
         quorum_proof_id: Address,
         sbt_registry_id: Address,
         zk_verifier_id: Address,
+        zk_admin: Address,
         subject: Address,
         credential_id: u64,
         claim_type: ClaimType,
@@ -1020,7 +1023,7 @@ impl QuorumProofContract {
             return false;
         }
         let zk_client = ZkVerifierContractClient::new(&env, &zk_verifier_id);
-        zk_client.verify_claim(&quorum_proof_id, &credential_id, &claim_type, &proof)
+        zk_client.verify_claim(&zk_admin, &quorum_proof_id, &credential_id, &claim_type, &proof)
     }
 
     /// Register a human-readable label for a credential type.
@@ -1957,8 +1960,8 @@ mod tests {
 
     #[test]
     fn test_verify_engineer_success() {
-        use sbt_registry::SbtRegistryContract;
-        use zk_verifier::{ClaimType, ZkVerifierContract};
+        use sbt_registry::{SbtRegistryContract, SbtRegistryContractClient};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
@@ -1968,7 +1971,10 @@ mod tests {
         let zk_id = env.register_contract(None, ZkVerifierContract);
 
         let qp = QuorumProofContractClient::new(&env, &qp_id);
-        let sbt = sbt_registry::SbtRegistryContractClient::new(&env, &sbt_id);
+        let sbt = SbtRegistryContractClient::new(&env, &sbt_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
+        sbt.initialize(&zk_admin, &qp_id);
 
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
@@ -1984,6 +1990,7 @@ mod tests {
             &qp_id,
             &sbt_id,
             &zk_id,
+            &zk_admin,
             &subject,
             &cred_id,
             &ClaimType::HasDegree,
@@ -1994,16 +2001,20 @@ mod tests {
 
     #[test]
     fn test_verify_engineer_fails_without_sbt() {
-        use zk_verifier::ClaimType;
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
 
         let qp_id = env.register_contract(None, QuorumProofContract);
         let sbt_id = env.register_contract(None, sbt_registry::SbtRegistryContract);
-        let zk_id = env.register_contract(None, zk_verifier::ZkVerifierContract);
+        let zk_id = env.register_contract(None, ZkVerifierContract);
 
         let qp = QuorumProofContractClient::new(&env, &qp_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
+        sbt_registry::SbtRegistryContractClient::new(&env, &sbt_id).initialize(&zk_admin, &qp_id);
+
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
@@ -2015,6 +2026,7 @@ mod tests {
             &qp_id,
             &sbt_id,
             &zk_id,
+            &zk_admin,
             &subject,
             &cred_id,
             &ClaimType::HasDegree,
@@ -2025,18 +2037,21 @@ mod tests {
 
     #[test]
     fn test_verify_engineer_fails_with_empty_proof() {
-        use sbt_registry::SbtRegistryContract;
-        use zk_verifier::ClaimType;
+        use sbt_registry::{SbtRegistryContract, SbtRegistryContractClient};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
 
         let qp_id = env.register_contract(None, QuorumProofContract);
         let sbt_id = env.register_contract(None, SbtRegistryContract);
-        let zk_id = env.register_contract(None, zk_verifier::ZkVerifierContract);
+        let zk_id = env.register_contract(None, ZkVerifierContract);
 
         let qp = QuorumProofContractClient::new(&env, &qp_id);
-        let sbt = sbt_registry::SbtRegistryContractClient::new(&env, &sbt_id);
+        let sbt = SbtRegistryContractClient::new(&env, &sbt_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
+        sbt.initialize(&zk_admin, &qp_id);
 
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
@@ -2051,6 +2066,7 @@ mod tests {
             &qp_id,
             &sbt_id,
             &zk_id,
+            &zk_admin,
             &subject,
             &cred_id,
             &ClaimType::HasLicense,
@@ -2058,12 +2074,6 @@ mod tests {
         );
         assert!(!result);
     }
-
-    // --- reputation & counts ---
-
-    #[test]
-    fn test_get_attestor_reputation_increments_per_attestation() {
-        let env = Env::default();
         env.mock_all_auths();
         let (client, _) = setup(&env);
         let issuer = Address::generate(&env);
@@ -2513,8 +2523,8 @@ mod tests {
     // Issue #48: Full Credential Lifecycle End-to-End
     #[test]
     fn test_full_credential_lifecycle_e2e() {
-        use sbt_registry::SbtRegistryContract;
-        use zk_verifier::{ClaimType, ZkVerifierContract};
+        use sbt_registry::{SbtRegistryContract, SbtRegistryContractClient};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
@@ -2525,7 +2535,10 @@ mod tests {
         let zk_id = env.register_contract(None, ZkVerifierContract);
 
         let qp = QuorumProofContractClient::new(&env, &qp_id);
-        let sbt = sbt_registry::SbtRegistryContractClient::new(&env, &sbt_id);
+        let sbt = SbtRegistryContractClient::new(&env, &sbt_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
+        sbt.initialize(&zk_admin, &qp_id);
 
         let issuer = Address::generate(&env);
         let subject = Address::generate(&env);
@@ -2586,12 +2599,12 @@ mod tests {
 
         // Step 6: Verify ZK claim via verify_engineer
         let proof = Bytes::from_slice(&env, b"valid-proof");
-        let verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &subject, &cred_id, &ClaimType::HasDegree, &proof);
+        let verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &proof);
         assert!(verified);
 
         // Assert empty proof fails verification
         let empty_proof = Bytes::new(&env);
-        let not_verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &subject, &cred_id, &ClaimType::HasDegree, &empty_proof);
+        let not_verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &empty_proof);
         assert!(!not_verified);
     }
 
@@ -2627,13 +2640,15 @@ mod tests {
 
     #[test]
     fn test_verify_claim_batch_all_valid() {
-        use zk_verifier::{ClaimType, ZkVerifierContract};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
         let qp_id = env.register_contract(None, QuorumProofContract);
         let zk_id = env.register_contract(None, ZkVerifierContract);
         let client = QuorumProofContractClient::new(&env, &qp_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
 
         let mut claim_types = Vec::new(&env);
         claim_types.push_back(ClaimType::HasDegree);
@@ -2643,7 +2658,7 @@ mod tests {
         proofs.push_back(Bytes::from_slice(&env, b"proof-a"));
         proofs.push_back(Bytes::from_slice(&env, b"proof-b"));
 
-        let results = client.verify_claim_batch(&zk_id, &qp_id, &1u64, &claim_types, &proofs);
+        let results = client.verify_claim_batch(&zk_id, &zk_admin, &qp_id, &1u64, &claim_types, &proofs);
         assert_eq!(results.len(), 2);
         assert!(results.get(0).unwrap());
         assert!(results.get(1).unwrap());
@@ -2651,13 +2666,15 @@ mod tests {
 
     #[test]
     fn test_verify_claim_batch_mixed_results() {
-        use zk_verifier::{ClaimType, ZkVerifierContract};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
         let qp_id = env.register_contract(None, QuorumProofContract);
         let zk_id = env.register_contract(None, ZkVerifierContract);
         let client = QuorumProofContractClient::new(&env, &qp_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
 
         let mut claim_types = Vec::new(&env);
         claim_types.push_back(ClaimType::HasDegree);
@@ -2667,7 +2684,7 @@ mod tests {
         proofs.push_back(Bytes::from_slice(&env, b"valid-proof"));
         proofs.push_back(Bytes::new(&env)); // empty proof → false
 
-        let results = client.verify_claim_batch(&zk_id, &qp_id, &1u64, &claim_types, &proofs);
+        let results = client.verify_claim_batch(&zk_id, &zk_admin, &qp_id, &1u64, &claim_types, &proofs);
         assert!(results.get(0).unwrap());
         assert!(!results.get(1).unwrap());
     }
@@ -2675,20 +2692,22 @@ mod tests {
     #[test]
     #[should_panic(expected = "claim_types and proofs lengths must match")]
     fn test_verify_claim_batch_mismatched_lengths_panics() {
-        use zk_verifier::{ClaimType, ZkVerifierContract};
+        use zk_verifier::{ClaimType, ZkVerifierContract, ZkVerifierContractClient};
 
         let env = Env::default();
         env.mock_all_auths();
         let qp_id = env.register_contract(None, QuorumProofContract);
         let zk_id = env.register_contract(None, ZkVerifierContract);
         let client = QuorumProofContractClient::new(&env, &qp_id);
+        let zk_admin = Address::generate(&env);
+        ZkVerifierContractClient::new(&env, &zk_id).initialize(&zk_admin);
 
         let mut claim_types = Vec::new(&env);
         claim_types.push_back(ClaimType::HasDegree);
 
         let proofs: Vec<Bytes> = Vec::new(&env); // empty — mismatch
 
-        client.verify_claim_batch(&zk_id, &qp_id, &1u64, &claim_types, &proofs);
+        client.verify_claim_batch(&zk_id, &zk_admin, &qp_id, &1u64, &claim_types, &proofs);
     }
 
     // --- Issue #40: get_slice_attestation_status ---
