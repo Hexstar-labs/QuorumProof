@@ -1074,6 +1074,8 @@ impl QuorumProofContract {
         description: soroban_sdk::String,
     ) {
         admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        assert!(admin == stored_admin, "unauthorized");
         let def = CredentialTypeDef {
             type_id,
             name,
@@ -1085,6 +1087,9 @@ impl QuorumProofContract {
         env.storage()
             .instance()
             .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("reg_type").into());
+        env.events().publish(topics, type_id);
     }
 
     /// Look up the registered name and description for a credential type.
@@ -2243,8 +2248,7 @@ mod tests {
     fn test_register_and_get_credential_type() {
         let env = Env::default();
         env.mock_all_auths();
-        let (client, _) = setup(&env);
-        let admin = Address::generate(&env);
+        let (client, admin) = setup(&env);
         let name = String::from_str(&env, "Mechanical Engineering Degree");
         let desc = String::from_str(&env, "Bachelor or higher in Mechanical Engineering");
 
@@ -2267,10 +2271,8 @@ mod tests {
     fn test_register_credential_type_overwrites() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, QuorumProofContract);
-        let client = QuorumProofContractClient::new(&env, &contract_id);
+        let (client, admin) = setup(&env);
 
-        let admin = Address::generate(&env);
         let name_v1 = String::from_str(&env, "Old Name");
         let name_v2 = String::from_str(&env, "New Name");
         let desc = String::from_str(&env, "desc");
@@ -2280,6 +2282,44 @@ mod tests {
 
         let def = client.get_credential_type(&1u32);
         assert_eq!(def.name, name_v2);
+    }
+
+    #[test]
+    #[should_panic(expected = "unauthorized")]
+    fn test_register_credential_type_non_admin_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin) = setup(&env);
+        let non_admin = Address::generate(&env);
+        let name = String::from_str(&env, "Fake Type");
+        let desc = String::from_str(&env, "desc");
+        client.register_credential_type(&non_admin, &1u32, &name, &desc);
+    }
+
+    #[test]
+    fn test_register_credential_type_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin) = setup(&env);
+        let name = String::from_str(&env, "Civil Engineering");
+        let desc = String::from_str(&env, "desc");
+
+        client.register_credential_type(&admin, &5u32, &name, &desc);
+
+        let events = env.events().all();
+        let reg_event = events.iter().find(|(_, topics, _)| {
+            if let Some(first) = topics.get(0) {
+                soroban_sdk::Symbol::try_from_val(&env, &first)
+                    .map(|s| s == symbol_short!("reg_type"))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
+        assert!(reg_event.is_some(), "reg_type event not emitted");
+        let (_, _, data) = reg_event.unwrap();
+        let emitted_id = u32::try_from_val(&env, &data).expect("data should be type_id");
+        assert_eq!(emitted_id, 5u32);
     }
 
     #[test]
