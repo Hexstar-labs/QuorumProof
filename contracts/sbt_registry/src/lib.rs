@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address, Bytes, Env, IntoVal, Vec};
 
 const STANDARD_TTL: u32 = 16_384;
 const EXTENDED_TTL: u32 = 524_288;
@@ -21,6 +21,7 @@ pub enum DataKey {
     OwnerTokens(Address),
     OwnerCredential(Address, u64),
     Admin,
+    QuorumProofId,
 }
 
 #[contracttype]
@@ -43,6 +44,9 @@ impl SbtRegistryContract {
     /// with the given `credential_id`. Each `(owner, credential_id)` pair may only
     /// have one SBT — attempting to mint a duplicate panics.
     ///
+    /// Cross-contract verifies via `quorum_proof` that the credential exists and is
+    /// not revoked before minting.
+    ///
     /// # Parameters
     /// - `owner`: The address receiving the SBT; must authorize this call.
     /// - `credential_id`: The credential this SBT is linked to.
@@ -51,8 +55,23 @@ impl SbtRegistryContract {
     /// # Panics
     /// Panics with `ContractError::SoulboundNonTransferable` if an SBT already exists
     /// for this `(owner, credential_id)` pair.
+    /// Panics if the credential does not exist or is revoked in `quorum_proof`.
     pub fn mint(env: Env, owner: Address, credential_id: u64, metadata_uri: Bytes) -> u64 {
         owner.require_auth();
+
+        // Cross-contract: verify credential exists and is not revoked.
+        // Uses env.invoke_contract to avoid a circular crate dependency with quorum_proof.
+        let qp_id: Address = env.storage().instance()
+            .get(&DataKey::QuorumProofId)
+            .expect("not initialized");
+        // is_revoked panics with CredentialNotFound if the credential doesn't exist.
+        let revoked: bool = env.invoke_contract(
+            &qp_id,
+            &symbol_short!("is_revoked"),
+            soroban_sdk::vec![&env, credential_id.into_val(&env)],
+        );
+        assert!(!revoked, "credential is revoked");
+
         if env.storage().instance().has(&DataKey::OwnerCredential(owner.clone(), credential_id)) {
             panic_with_error!(&env, ContractError::SoulboundNonTransferable);
         }
@@ -113,9 +132,10 @@ impl SbtRegistryContract {
     }
 
     /// Set the admin address once after deployment.
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, quorum_proof_id: Address) {
         assert!(!env.storage().instance().has(&DataKey::Admin), "already initialized");
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::QuorumProofId, &quorum_proof_id);
     }
 
     /// Admin-gated ownership transfer for legal name change or wallet recovery.
@@ -193,16 +213,34 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::BytesN;
+    use quorum_proof::{QuorumProofContract, QuorumProofContractClient};
+
+    fn setup_with_qp(env: &Env) -> (SbtRegistryContractClient, Address, QuorumProofContractClient, Address) {
+        let qp_id = env.register_contract(None, QuorumProofContract);
+        let qp_client = QuorumProofContractClient::new(env, &qp_id);
+        let admin = Address::generate(env);
+        qp_client.initialize(&admin);
+
+        let sbt_id = env.register_contract(None, SbtRegistryContract);
+        let sbt_client = SbtRegistryContractClient::new(env, &sbt_id);
+        sbt_client.initialize(&admin, &qp_id);
+
+        (sbt_client, admin, qp_client, qp_id)
+    }
 
     #[test]
     fn test_mint_and_ownership() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SbtRegistryContract);
-        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let (client, _admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        let issuer = Address::generate(&env);
         let owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+
         let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
-        let token_id = client.mint(&owner, &1u64, &uri);
+        let token_id = client.mint(&owner, &cred_id, &uri);
         assert_eq!(token_id, 1);
         assert_eq!(client.owner_of(&token_id), owner);
     }
@@ -212,19 +250,54 @@ mod tests {
     fn test_duplicate_sbt_minting_rejection() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SbtRegistryContract);
-        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let (client, _admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        let issuer = Address::generate(&env);
         let owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+
         let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
-        client.mint(&owner, &1u64, &uri);
-        client.mint(&owner, &1u64, &uri);
+        client.mint(&owner, &cred_id, &uri);
+        client.mint(&owner, &cred_id, &uri);
     }
 
-    // Other tests for ownership, get_tokens_by_owner etc. unchanged as per existing
-#[test]
+    /// Minting an SBT for a non-existent credential_id must panic.
+    #[test]
+    #[should_panic]
+    fn test_mint_nonexistent_credential_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let owner = Address::generate(&env);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        // credential_id 999 was never issued
+        client.mint(&owner, &999u64, &uri);
+    }
+
+    /// Minting an SBT for a revoked credential must panic.
+    #[test]
+    #[should_panic(expected = "credential is revoked")]
+    fn test_mint_revoked_credential_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+        qp_client.revoke_credential(&issuer, &cred_id);
+
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        client.mint(&owner, &cred_id, &uri);
+    }
+
+    #[test]
     fn test_get_tokens_by_owner_single() { /* impl from previous */ }
 
-#[test]
+    #[test]
     #[should_panic] // upgrade requires the WASM to exist in host storage; this verifies auth passes
     fn test_upgrade_success() {
         let env = Env::default();
@@ -235,13 +308,12 @@ mod tests {
         let admin = Address::generate(&env);
         let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
 
-        // Should succeed without panic
         client.upgrade(&admin, &wasm_hash);
     }
 
-#[test]
-#[should_panic(expected = "HostError")]
-fn test_upgrade_unauthorized_panics() {
+    #[test]
+    #[should_panic(expected = "HostError")]
+    fn test_upgrade_unauthorized_panics() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SbtRegistryContract);
@@ -251,30 +323,27 @@ fn test_upgrade_unauthorized_panics() {
         let unpriv = Address::generate(&env);
         let wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
 
-        client.upgrade(&admin, &wasm_hash);  // Authorize admin first
+        client.upgrade(&admin, &wasm_hash);
 
-        // Unauthorized should panic on require_auth
         env.as_contract(&contract_id, || {
             client.upgrade(&unpriv, &wasm_hash);
         });
     }
 
-    // --- Issue #191: admin_transfer_sbt ---
-
     #[test]
     fn test_admin_transfer_sbt_updates_ownership() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SbtRegistryContract);
-        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
 
-        let admin = Address::generate(&env);
+        let issuer = Address::generate(&env);
         let old_owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
-        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &old_owner, &1u32, &meta, &None);
 
-        client.initialize(&admin);
-        let token_id = client.mint(&old_owner, &1u64, &uri);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let token_id = client.mint(&old_owner, &cred_id, &uri);
 
         client.admin_transfer_sbt(&admin, &token_id, &new_owner);
 
@@ -289,18 +358,19 @@ fn test_upgrade_unauthorized_panics() {
     fn test_admin_transfer_sbt_non_admin_panics() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SbtRegistryContract);
-        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
 
-        let admin = Address::generate(&env);
         let non_admin = Address::generate(&env);
         let owner = Address::generate(&env);
         let new_owner = Address::generate(&env);
+        let issuer = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+
         let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let token_id = client.mint(&owner, &cred_id, &uri);
 
-        client.initialize(&admin);
-        let token_id = client.mint(&owner, &1u64, &uri);
-
+        let _ = admin; // admin initialized the contract
         client.admin_transfer_sbt(&non_admin, &token_id, &new_owner);
     }
 }

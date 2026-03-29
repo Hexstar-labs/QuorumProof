@@ -18,6 +18,12 @@ This applies the Stellar whitepaper's "individual trust decisions" model to a hi
 
 ## 🚀 Features
 
+> **⚠️ ZK Verification is a stub (v1.0)**
+> The `verify_claim` function in `zk_verifier` accepts any non-empty bytes as a valid proof.
+> It provides **no cryptographic security or privacy guarantees** and is admin-gated until
+> real ZK proof verification (Groth16/PLONK) is implemented in v1.1.
+> See [docs/architecture.md](docs/architecture.md) for details.
+
 - **Audit Slices**: Define your own quorum of trusted attestors (university, licensing body, employers)
 - **Soulbound Tokens (SBTs)**: Non-transferable on-chain credentials tied to your Stellar identity
 - **Conditional Verification**: Firms verify specific claims (e.g. "has a Mechanical Engineering degree") without accessing full transcripts — powered by Zero-Knowledge proofs on Soroban
