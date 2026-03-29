@@ -1227,6 +1227,38 @@ impl QuorumProofContract {
             .get(&DataKey::ProofRequests(credential_id))
             .unwrap_or(Vec::new(&env))
     }
+
+    /// Check if a credential exists without panicking.
+    ///
+    /// # Parameters
+    /// - `credential_id`: The ID of the credential to check.
+    ///
+    /// # Returns
+    /// `true` if the credential exists in storage, `false` otherwise.
+    ///
+    /// # Panics
+    /// Does not panic.
+    pub fn credential_exists(env: Env, credential_id: u64) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::Credential(credential_id))
+    }
+
+    /// Check if a quorum slice exists without panicking.
+    ///
+    /// # Parameters
+    /// - `slice_id`: The ID of the slice to check.
+    ///
+    /// # Returns
+    /// `true` if the slice exists in storage, `false` otherwise.
+    ///
+    /// # Panics
+    /// Does not panic.
+    pub fn slice_exists(env: Env, slice_id: u64) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::Slice(slice_id))
+    }
 }
 
 #[cfg(test)]
@@ -2775,5 +2807,53 @@ mod tests {
 
         client.attest(&attestor2, &cred_id, &slice_id);
         assert_eq!(client.get_attestors(&cred_id).len(), 2);
+    }
+
+    // --- Issue #226: credential_exists ---
+
+    #[test]
+    fn test_credential_exists_returns_true_for_existing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        assert!(client.credential_exists(&cred_id));
+    }
+
+    #[test]
+    fn test_credential_exists_returns_false_for_nonexisting() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        assert!(!client.credential_exists(&999u64));
+    }
+
+    // --- Issue #227: slice_exists ---
+
+    #[test]
+    fn test_slice_exists_returns_true_for_existing() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let creator = Address::generate(&env);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(Address::generate(&env));
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+
+        let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
+        assert!(client.slice_exists(&slice_id));
+    }
+
+    #[test]
+    fn test_slice_exists_returns_false_for_nonexisting() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        assert!(!client.slice_exists(&999u64));
     }
 }
