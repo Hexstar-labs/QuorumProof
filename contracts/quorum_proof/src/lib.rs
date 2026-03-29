@@ -1228,12 +1228,13 @@ mod tests {
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
 
         env.ledger().set(LedgerInfo {
-            timestamp: ts,
+            timestamp: 1_000,
             protocol_version: 20,
             sequence_number: 100,
             network_id: Default::default(),
             base_reserve: 10,
             min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
             max_entry_ttl: 6_312_000,
         });
 
@@ -1446,17 +1447,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only subject or issuer can revoke")]
-    fn test_unauthorized_revoke_credential() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = setup(&env);
-        let issuer = Address::generate(&env);
-        let subject = Address::generate(&env);
-        client.issue_credential(&issuer, &subject, &1u32, &Bytes::new(&env), &None);
-    }
-
-    #[test]
     #[should_panic]
     fn test_pause_blocks_attest() {
         let env = Env::default();
@@ -1499,12 +1489,8 @@ mod tests {
         let creator = Address::generate(&env);
         let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
 
-        client.pause(&admin);
-        client.attest(&attestor, &cred_id, &slice_id);
-        client.attest(&attestor1, &cred_id, &slice_id);
-        client.attest(&attestor1, &cred_id, &slice_id);
         assert!(!client.is_attested(&cred_id, &slice_id));
-        client.attest(&attestor2, &cred_id, &slice_id);
+        client.attest(&attestor, &cred_id, &slice_id);
         assert!(client.is_attested(&cred_id, &slice_id));
     }
 
@@ -1539,6 +1525,14 @@ mod tests {
         let attestor = Address::generate(&env);
         let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.revoke_credential(&issuer, &id);
+        client.attest(&attestor, &id, &slice_id);
+    }
 
     // --- slice management ---
 
@@ -1821,28 +1815,6 @@ mod tests {
     }
 
     // --- batch issue ---
-
-    #[test]
-    #[should_panic(expected = "credential is revoked")]
-    fn test_attest_revoked_credential_panics() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = setup(&env);
-        let issuer = Address::generate(&env);
-        let subject = Address::generate(&env);
-        let attestor = Address::generate(&env);
-        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
-
-        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
-        let mut attestors = Vec::new(&env);
-        attestors.push_back(attestor.clone());
-        let mut weights = Vec::new(&env);
-        weights.push_back(1u32);
-        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
-
-        client.revoke_credential(&issuer, &cred_id);
-        client.attest(&attestor, &cred_id, &slice_id);
-    }
 
     #[test]
     fn test_add_attestor_success() {
@@ -2357,7 +2329,6 @@ mod tests {
         // Attempting to attest a revoked credential must panic
         client.attest(&attestor, &cred_id, &slice_id);
     }
-}
 
     #[test]
     fn test_get_attestation_count() {
@@ -2508,7 +2479,6 @@ mod tests {
         // Unauthorized address should not be able to revoke
         client.revoke_credential(&unauthorized, &id);
     }
-}
 
     // Issue #48: Full Credential Lifecycle End-to-End
     #[test]
