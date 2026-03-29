@@ -184,7 +184,9 @@ impl SbtRegistryContract {
         if let Some(pos) = owner_tokens.iter().position(|id| id == token_id) {
             owner_tokens.remove(pos as u32);
         }
-        env.storage().persistent().set(&DataKey::OwnerTokens(owner), &owner_tokens);
+        env.storage().persistent().set(&DataKey::OwnerTokens(owner.clone()), &owner_tokens);
+        // Remove uniqueness mapping so the owner can re-mint for the same credential
+        env.storage().instance().remove(&DataKey::OwnerCredential(owner, token.credential_id));
     }
 
     /// Admin-only contract upgrade to new WASM. Uses deployer convention for auth.
@@ -211,6 +213,24 @@ mod tests {
         let token_id = client.mint(&owner, &1u64, &uri);
         assert_eq!(token_id, 1);
         assert_eq!(client.owner_of(&token_id), owner);
+    }
+
+    #[test]
+    fn test_burn_allows_remint_same_credential() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SbtRegistryContract);
+        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+
+        // mint, burn, then re-mint the same credential — must succeed
+        let token_id = client.mint(&owner, &1u64, &uri);
+        client.burn(&owner, &token_id);
+        let new_token_id = client.mint(&owner, &1u64, &uri);
+
+        assert_eq!(new_token_id, 2);
+        assert_eq!(client.owner_of(&new_token_id), owner);
     }
 
     #[test]
