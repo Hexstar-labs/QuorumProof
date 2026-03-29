@@ -94,7 +94,9 @@ impl SbtRegistryContract {
         // Uniqueness mapping
         env.storage().instance().set(&DataKey::OwnerCredential(owner.clone(), credential_id), &token_id);
 
-        env.events().publish(("mint",), token_id);
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("mint").into());
+        env.events().publish(topics, token_id);
         token_id
     }
 
@@ -176,7 +178,11 @@ impl SbtRegistryContract {
         env.storage().persistent().set(&DataKey::Owner(token_id), &new_owner);
         env.storage().persistent().extend_ttl(&DataKey::Owner(token_id), STANDARD_TTL, EXTENDED_TTL);
 
-        env.events().publish(("admin_transfer", old_owner, new_owner), token_id);
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("xfer").into());
+        topics.push_back(old_owner.into());
+        topics.push_back(new_owner.into());
+        env.events().publish(topics, token_id);
     }
 
     pub fn transfer(env: Env, _from: Address, _to: Address, _token_id: u64) {
@@ -198,7 +204,9 @@ impl SbtRegistryContract {
         if let Some(pos) = owner_tokens.iter().position(|id| id == token_id) {
             owner_tokens.remove(pos as u32);
         }
-        env.storage().persistent().set(&DataKey::OwnerTokens(owner), &owner_tokens);
+        env.storage().persistent().set(&DataKey::OwnerTokens(owner.clone()), &owner_tokens);
+        // Remove uniqueness mapping so the owner can re-mint for the same credential
+        env.storage().instance().remove(&DataKey::OwnerCredential(owner, token.credential_id));
     }
 
     /// Admin-only contract upgrade to new WASM. Uses deployer convention for auth.
@@ -243,6 +251,52 @@ mod tests {
         let token_id = client.mint(&owner, &cred_id, &uri);
         assert_eq!(token_id, 1);
         assert_eq!(client.owner_of(&token_id), owner);
+    }
+
+    #[test]
+    fn test_burn_allows_remint_same_credential() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SbtRegistryContract);
+        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+
+        // mint, burn, then re-mint the same credential — must succeed
+        let token_id = client.mint(&owner, &1u64, &uri);
+        client.burn(&owner, &token_id);
+        let new_token_id = client.mint(&owner, &1u64, &uri);
+
+        assert_eq!(new_token_id, 2);
+        assert_eq!(client.owner_of(&new_token_id), owner);
+    }
+
+    #[test]
+    fn test_mint_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SbtRegistryContract);
+        let client = SbtRegistryContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+
+        let token_id = client.mint(&owner, &1u64, &uri);
+
+        let events = env.events().all();
+        // Find the mint event: topic[0] == symbol "mint", data == token_id
+        let mint_event = events.iter().find(|(_, topics, _)| {
+            if let Some(first) = topics.get(0) {
+                soroban_sdk::Symbol::try_from_val(&env, &first)
+                    .map(|s| s == symbol_short!("mint"))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
+        assert!(mint_event.is_some(), "mint event not emitted");
+        let (_, _, data) = mint_event.unwrap();
+        let emitted_id = u64::try_from_val(&env, &data).expect("data should be token_id");
+        assert_eq!(emitted_id, token_id);
     }
 
     #[test]
