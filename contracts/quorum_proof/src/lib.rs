@@ -1034,7 +1034,6 @@ impl QuorumProofContract {
     /// Does not panic; returns `false` if the subject has no matching SBT or the proof fails.
     pub fn verify_engineer(
         env: Env,
-        quorum_proof_id: Address,
         sbt_registry_id: Address,
         zk_verifier_id: Address,
         zk_admin: Address,
@@ -1043,6 +1042,7 @@ impl QuorumProofContract {
         claim_type: ClaimType,
         proof: soroban_sdk::Bytes,
     ) -> bool {
+        let quorum_proof_id = env.current_contract_address();
         let sbt_client = SbtRegistryContractClient::new(&env, &sbt_registry_id);
         let tokens = sbt_client.get_tokens_by_owner(&subject);
         let has_sbt = tokens.iter().any(|token_id| {
@@ -1660,8 +1660,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only the slice creator can add attestors")]
-    fn test_add_attestor_unauthorized_panics() {
+    fn test_get_credentials_by_subject_multiple() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
@@ -1905,12 +1904,14 @@ mod tests {
         let non_creator = Address::generate(&env);
         let attestor = Address::generate(&env);
 
+        // Create slice with at least one attestor to avoid "attestors cannot be empty" panic
         let mut initial = Vec::new(&env);
         initial.push_back(Address::generate(&env));
         let mut initial_weights = Vec::new(&env);
         initial_weights.push_back(1u32);
         let slice_id = client.create_slice(&creator, &initial, &initial_weights, &1u32);
 
+        // This should panic with "only the slice creator can add attestors"
         client.add_attestor(&non_creator, &slice_id, &attestor, &1u32);
     }
 
@@ -1989,7 +1990,6 @@ mod tests {
 
         let proof = Bytes::from_slice(&env, b"valid-proof");
         let result = qp.verify_engineer(
-            &qp_id,
             &sbt_id,
             &zk_id,
             &zk_admin,
@@ -2025,7 +2025,6 @@ mod tests {
 
         let proof = Bytes::from_slice(&env, b"valid-proof");
         let result = qp.verify_engineer(
-            &qp_id,
             &sbt_id,
             &zk_id,
             &zk_admin,
@@ -2065,7 +2064,6 @@ mod tests {
 
         let proof = Bytes::from_slice(&env, b"");
         let result = qp.verify_engineer(
-            &qp_id,
             &sbt_id,
             &zk_id,
             &zk_admin,
@@ -2076,6 +2074,10 @@ mod tests {
         );
         assert!(!result);
     }
+
+    #[test]
+    fn test_get_attestor_reputation_increments_per_attestation() {
+        let env = Env::default();
         env.mock_all_auths();
         let (client, _) = setup(&env);
         let issuer = Address::generate(&env);
@@ -2599,12 +2601,12 @@ mod tests {
 
         // Step 6: Verify ZK claim via verify_engineer
         let proof = Bytes::from_slice(&env, b"valid-proof");
-        let verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &proof);
+        let verified = qp.verify_engineer(&sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &proof);
         assert!(verified);
 
         // Assert empty proof fails verification
         let empty_proof = Bytes::new(&env);
-        let not_verified = qp.verify_engineer(&qp_id, &sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &empty_proof);
+        let not_verified = qp.verify_engineer(&sbt_id, &zk_id, &zk_admin, &subject, &cred_id, &ClaimType::HasDegree, &empty_proof);
         assert!(!not_verified);
     }
 
