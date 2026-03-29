@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Navbar } from '../components/Navbar';
 import { WalletGate } from '../components/WalletGate';
 import { CredentialCard } from '../components/CredentialCard';
+import { CredentialCardSkeleton } from '../components/CredentialCardSkeleton';
 import { EmptyState } from '../components/EmptyState';
 import { useWallet } from '../hooks';
 import {
@@ -147,9 +148,10 @@ export default function Dashboard() {
 
           {/* Loading credentials */}
           {address && loading && (
-            <div className="loading-state">
-              <div className="spinner" />
-              <p>Loading your credentials…</p>
+            <div className="dashboard-grid">
+              {[1, 2, 3].map((i) => (
+                <CredentialCardSkeleton key={`skeleton-${i}`} />
+              ))}
             </div>
           )}
 
