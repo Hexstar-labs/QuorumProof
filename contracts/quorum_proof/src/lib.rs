@@ -55,6 +55,7 @@ pub enum ContractError {
     SliceNotFound = 2,
     ContractPaused = 3,
     DuplicateCredential = 4,
+    DuplicateAttestor = 5,
 }
 
 #[contracttype]
@@ -604,7 +605,9 @@ impl QuorumProofContract {
         );
         assert!(weight > 0, "weight must be greater than 0");
         for a in slice.attestors.iter() {
-            assert!(a != attestor, "attestor already in slice");
+            if a == attestor {
+                panic_with_error!(&env, ContractError::DuplicateAttestor);
+            }
         }
         slice.attestors.push_back(attestor);
         slice.weights.push_back(weight);
@@ -1914,7 +1917,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "attestor already in slice")]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn test_add_attestor_duplicate_panics() {
         let env = Env::default();
         env.mock_all_auths();
