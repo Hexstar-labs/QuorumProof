@@ -406,6 +406,22 @@ impl QuorumProofContract {
         result
     }
 
+    /// Check if a credential with the given ID exists.
+    ///
+    /// # Parameters
+    /// - `credential_id`: The ID of the credential to check.
+    ///
+    /// # Returns
+    /// Returns `true` if a credential with the given ID exists, `false` otherwise.
+    ///
+    /// # Panics
+    /// Does not panic; returns `false` if the credential does not exist.
+    pub fn credential_exists(env: Env, credential_id: u64) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::Credential(credential_id))
+    }
+
     /// Revoke a credential. Only the original issuer can revoke.
     ///
     /// # Parameters
