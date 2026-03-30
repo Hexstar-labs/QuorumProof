@@ -66,7 +66,9 @@ impl ZkVerifierContract {
             .expect("not initialized");
         assert!(stored_admin == admin, "unauthorized");
 
-        // STUB: any non-empty proof passes. Replace with real ZK logic in v1.1.
+        // STUB: not production-ready. Any non-empty proof passes.
+        // No cryptographic verification is performed — no Groth16, no PLONK, no privacy guarantees.
+        // Tracked for real implementation in v1.1: https://github.com/cryptonautt/QuorumProof/issues
         !proof.is_empty()
     }
 

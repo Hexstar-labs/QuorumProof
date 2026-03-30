@@ -24,6 +24,13 @@
                   ]
                 },
                 {
+                  "vec": [
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                {
                   "u32": 1
                 }
               ]
@@ -115,6 +122,18 @@
                               },
                               "val": {
                                 "u32": 1
+                              }
+                            },
+                            {
+                              "key": {
+                                "symbol": "weights"
+                              },
+                              "val": {
+                                "vec": [
+                                  {
+                                    "u32": 1
+                                  }
+                                ]
                               }
                             }
                           ]
@@ -230,6 +249,13 @@
                   ]
                 },
                 {
+                  "vec": [
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                {
                   "u32": 1
                 }
               ]
@@ -290,6 +316,9 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }
@@ -313,7 +342,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'attestor already in slice' from contract function 'Symbol(obj#33)'"
+                  "string": "caught panic 'attestor already in slice' from contract function 'Symbol(obj#37)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -323,6 +352,9 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }
@@ -391,6 +423,9 @@
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    },
+                    {
+                      "u32": 1
                     }
                   ]
                 }

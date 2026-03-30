@@ -106,7 +106,17 @@
                   ]
                 },
                 {
-                  "u32": 5
+                  "vec": [
+                    {
+                      "u32": 1
+                    },
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                {
+                  "u32": 3
                 }
               ]
             }
@@ -130,7 +140,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'threshold cannot exceed attestors count' from contract function 'Symbol(obj#17)'"
+                  "string": "caught panic 'threshold cannot exceed attestors length' from contract function 'Symbol(obj#23)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -146,7 +156,17 @@
                   ]
                 },
                 {
-                  "u32": 5
+                  "vec": [
+                    {
+                      "u32": 1
+                    },
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                {
+                  "u32": 3
                 }
               ]
             }
@@ -221,7 +241,17 @@
                       ]
                     },
                     {
-                      "u32": 5
+                      "vec": [
+                        {
+                          "u32": 1
+                        },
+                        {
+                          "u32": 1
+                        }
+                      ]
+                    },
+                    {
+                      "u32": 3
                     }
                   ]
                 }

@@ -25,22 +25,20 @@ export default function IssueCredential() {
             </div>
           </div>
 
-          <WalletGuard>
-            <div className="search-card">
-              <div className="detail-card__header" style={{ marginBottom: 24, padding: 0, background: 'none', border: 'none' }}>
-                <span className="detail-card__title">Issuing as</span>
-                <span
-                  className="wallet-pill"
-                  title={address!}
-                  aria-label={`Connected wallet: ${address}`}
-                >
-                  <span className="wallet-pill__dot" aria-hidden="true" />
-                  {formatAddress(address!)}
-                </span>
-              </div>
-              <IssueCredentialForm issuerAddress={address!} />
+          <div className="search-card">
+            <div className="detail-card__header" style={{ marginBottom: 24, padding: 0, background: 'none', border: 'none' }}>
+              <span className="detail-card__title">Issuing as</span>
+              <span
+                className="wallet-pill"
+                title={address!}
+                aria-label={`Connected wallet: ${address}`}
+              >
+                <span className="wallet-pill__dot" aria-hidden="true" />
+                {formatAddress(address!)}
+              </span>
             </div>
-          </WalletGuard>
+            <IssueCredentialForm issuerAddress={address!} />
+          </div>
         </div>
       </main>
     </div>

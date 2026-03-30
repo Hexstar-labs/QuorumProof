@@ -25,18 +25,16 @@ export default function QuorumSlice() {
             </div>
           </div>
 
-          <WalletGuard>
-            <div className="search-card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-                <span className="detail-card__title">Building as</span>
-                <span className="wallet-pill" title={address!}>
-                  <span className="wallet-pill__dot" aria-hidden="true" />
-                  {formatAddress(address!)}
-                </span>
-              </div>
-              <QuorumSliceBuilder creatorAddress={address!} />
+          <div className="search-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+              <span className="detail-card__title">Building as</span>
+              <span className="wallet-pill" title={address!}>
+                <span className="wallet-pill__dot" aria-hidden="true" />
+                {formatAddress(address!)}
+              </span>
             </div>
-          </WalletGuard>
+            <QuorumSliceBuilder creatorAddress={address!} />
+          </div>
         </div>
       </main>
     </div>

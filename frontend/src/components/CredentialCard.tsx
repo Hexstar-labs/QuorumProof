@@ -1,13 +1,10 @@
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   type CredCardData,
   deriveStatus,
   formatAddress,
-  attestorRole,
   credTypeLabel,
-  formatTimestamp,
 } from '../lib/credentialUtils';
-import { decodeMetadataHash } from '../stellar';
 
 interface CredentialCardProps {
   data: CredCardData;
@@ -15,27 +12,49 @@ interface CredentialCardProps {
 }
 
 const STATUS_CONFIG = {
-  attested: { label: 'Attested', icon: '✅', badgeClass: 'badge--green' },
-  pending:  { label: 'Pending',  icon: '⏳', badgeClass: 'badge--blue'  },
-  revoked:  { label: 'Revoked',  icon: '🚫', badgeClass: 'badge--red'   },
-  expired:  { label: 'Expired',  icon: '⏰', badgeClass: 'badge--gray'  },
+  attested: { label: 'Attested', icon: '✅', badgeClass: 'badge--green', headerMod: 'valid'   },
+  pending:  { label: 'Pending',  icon: '⏳', badgeClass: 'badge--blue',  headerMod: 'pending' },
+  revoked:  { label: 'Revoked',  icon: '🚫', badgeClass: 'badge--red',   headerMod: 'revoked' },
+  expired:  { label: 'Expired',  icon: '⏰', badgeClass: 'badge--gray',  headerMod: 'expired' },
 };
 
 export function CredentialCard({ data, sliceId }: CredentialCardProps) {
   const { credential, attested, slice, expired, sliceError, credError } = data;
+  const navigate = useNavigate();
 
   const status = deriveStatus(credential.revoked, expired, attested);
-  const { label, icon, badgeClass } = STATUS_CONFIG[status];
-  const metaStr = decodeMetadataHash(credential.metadata_hash);
+  const { label, icon, badgeClass, headerMod } = STATUS_CONFIG[status];
   const idStr = credential.id.toString();
+  const truncId = idStr.length > 14 ? idStr.slice(0, 6) + '…' + idStr.slice(-4) : idStr;
+  const isRevoked = status === 'revoked';
+
+  function handleNavigate() {
+    navigate(`/credential/${credential.id}`);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleNavigate();
+    }
+  }
 
   return (
-    <div className="cred-card">
+    <div
+      className={`cred-card${isRevoked ? ' cred-card--revoked' : ''}`}
+      role="article"
+      tabIndex={0}
+      aria-label={`${credTypeLabel(credential.credential_type)} credential ${truncId}, status: ${label}`}
+      onClick={handleNavigate}
+      onKeyDown={handleKeyDown}
+      style={{ cursor: 'pointer' }}
+    >
       {/* Header */}
-      <div className={`cred-card__header cred-card__header--${status}`}>
+      <div className={`cred-card__header cred-card__header--${headerMod}`}>
         <div className="cred-card__type">{credTypeLabel(credential.credential_type)}</div>
         <div
           className={`badge ${badgeClass}`}
+          role="status"
           aria-label={`Attestation status: ${label}`}
         >
           {icon} {label}
@@ -47,31 +66,33 @@ export function CredentialCard({ data, sliceId }: CredentialCardProps) {
         <div className="cred-card__body cred-card__body--error">
           <div style={{ fontSize: '24px', marginBottom: '8px' }}>⚠️</div>
           <div style={{ color: 'var(--red)', fontSize: '13px' }}>Failed to load</div>
-          <div style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '4px' }}>
-            {credError}
-          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '4px' }}>{credError}</div>
         </div>
       ) : (
         <div className="cred-card__body">
-          <h3 className="cred-card__id">
-            Credential #{idStr.length > 14 ? idStr.slice(0, 8) + '…' + idStr.slice(-6) : idStr}
-          </h3>
+          <h3 className="cred-card__id">#{truncId}</h3>
 
           <div className="cred-card__meta">
+            <div className="meta-row">
+              <span className="meta-label">Subject</span>
+              <span className="meta-value mono" title={credential.subject}>
+                {formatAddress(credential.subject)}
+              </span>
+            </div>
             <div className="meta-row">
               <span className="meta-label">Issuer</span>
               <span className="meta-value mono" title={credential.issuer}>
                 {formatAddress(credential.issuer)}
               </span>
             </div>
-            <div className="meta-row">
-              <span className="meta-label">Metadata</span>
-              <span className="meta-value mono">{metaStr || '—'}</span>
-            </div>
             {credential.expires_at && (
               <div className="meta-row">
                 <span className="meta-label">Expires</span>
-                <span className="meta-value">{formatTimestamp(credential.expires_at)}</span>
+                <span className="meta-value">
+                  {new Date(Number(credential.expires_at) * 1000).toLocaleDateString(undefined, {
+                    year: 'numeric', month: 'short', day: 'numeric',
+                  })}
+                </span>
               </div>
             )}
             {sliceId && (
@@ -92,28 +113,25 @@ export function CredentialCard({ data, sliceId }: CredentialCardProps) {
                 </span>
               )}
             </div>
-
             {sliceError ? (
               <div className="attestors-empty">Slice unavailable</div>
             ) : !slice ? (
-              <div className="attestors-empty">No slice data available</div>
+              <div className="attestors-empty">No slice data</div>
             ) : slice.attestors.length === 0 ? (
               <div className="attestors-empty">No attestors assigned</div>
             ) : (
               <div className="attestor-mini-list">
-                {slice.attestors.map((addr, i) => (
+                {slice.attestors.slice(0, 3).map((addr, i) => (
                   <div key={addr} className="attestor-mini-item">
                     <span className="attestor-mini-item__avatar">{i + 1}</span>
-                    <div className="attestor-mini-item__info">
-                      <span className="mono" title={addr}>
-                        {formatAddress(addr)}
-                      </span>
-                      <span className="attestor-mini-item__role">
-                        {attestorRole(i)}
-                      </span>
-                    </div>
+                    <span className="mono" title={addr} style={{ fontSize: '11px' }}>
+                      {formatAddress(addr)}
+                    </span>
                   </div>
                 ))}
+                {slice.attestors.length > 3 && (
+                  <div className="attestors-empty">+{slice.attestors.length - 3} more</div>
+                )}
               </div>
             )}
           </div>
@@ -121,14 +139,8 @@ export function CredentialCard({ data, sliceId }: CredentialCardProps) {
       )}
 
       {/* Footer */}
-      <div className="cred-card__footer">
-        <Link
-          to={`/verify?credentialId=${credential.id}`}
-          className="btn btn--sm btn--ghost"
-          style={{ width: '100%', textAlign: 'center' }}
-        >
-          View Public Page →
-        </Link>
+      <div className="cred-card__footer" style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
+        Click to view details →
       </div>
     </div>
   );

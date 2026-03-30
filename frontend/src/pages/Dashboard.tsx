@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Navbar } from '../components/Navbar';
-import { WalletGuard } from '../components/WalletGate';
 import { CredentialCard } from '../components/CredentialCard';
 import { CredentialCardSkeleton } from '../components/CredentialCardSkeleton';
 import { EmptyState } from '../components/EmptyState';
@@ -133,52 +132,50 @@ export default function Dashboard() {
         </header>
 
         <div className="dashboard-content">
-          <WalletGuard>
-            {/* Loading credentials */}
-            {loading && (
-              <div className="dashboard-grid">
-                {[1, 2, 3].map((i) => (
-                  <CredentialCardSkeleton key={`skeleton-${i}`} />
-                ))}
-              </div>
-            )}
+          {/* Loading credentials */}
+          {loading && (
+            <div className="dashboard-grid">
+              {[1, 2, 3].map((i) => (
+                <CredentialCardSkeleton key={`skeleton-${i}`} />
+              ))}
+            </div>
+          )}
 
-            {/* Top-level fetch error */}
-            {!loading && error && (
-              <div className="error-card">
-                <div className="error-card__icon">⚠️</div>
-                <div>
-                  <div className="error-card__title">Could Not Load Credentials</div>
-                  <div className="error-card__msg">{error}</div>
-                  <button
-                    className="btn btn--ghost btn--sm"
-                    style={{ marginTop: '12px' }}
-                    onClick={() => setRetryKey((k: number) => k + 1)}
-                  >
-                    Retry
-                  </button>
-                </div>
+          {/* Top-level fetch error */}
+          {!loading && error && (
+            <div className="error-card">
+              <div className="error-card__icon">⚠️</div>
+              <div>
+                <div className="error-card__title">Could Not Load Credentials</div>
+                <div className="error-card__msg">{error}</div>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  style={{ marginTop: '12px' }}
+                  onClick={() => setRetryKey((k: number) => k + 1)}
+                >
+                  Retry
+                </button>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Empty state */}
-            {!loading && !error && cards.length === 0 && address && (
-              <EmptyState address={address} />
-            )}
+          {/* Empty state */}
+          {!loading && !error && cards.length === 0 && (
+            <EmptyState address={address!} />
+          )}
 
-            {/* Credential grid */}
-            {!loading && !error && cards.length > 0 && (
-              <div className="dashboard-grid">
-                {cards.map((card: CredCardData) => (
-                  <CredentialCard
-                    key={card.credential.id.toString()}
-                    data={card}
-                    sliceId={sliceId}
-                  />
-                ))}
-              </div>
-            )}
-          </WalletGuard>
+          {/* Credential grid */}
+          {!loading && !error && cards.length > 0 && (
+            <div className="dashboard-grid">
+              {cards.map((card: CredCardData) => (
+                <CredentialCard
+                  key={card.credential.id.toString()}
+                  data={card}
+                  sliceId={sliceId}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </main>
 

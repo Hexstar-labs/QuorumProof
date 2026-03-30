@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import { createSlice } from '../lib/contracts/quorumProof';
+import { useToast } from '../context/ToastContext';
 
 const ROLES = ['University', 'Licensing Body', 'Employer', 'Other'] as const;
 type Role = (typeof ROLES)[number];
@@ -31,6 +32,7 @@ interface SuccessState {
 }
 
 export function QuorumSliceBuilder({ creatorAddress }: { creatorAddress: string }) {
+  const { addToast, removeToast } = useToast();
   // Add-attestor form state
   const [addrInput, setAddrInput] = useState('');
   const [roleInput, setRoleInput] = useState<Role>('University');
@@ -83,15 +85,25 @@ export function QuorumSliceBuilder({ creatorAddress }: { creatorAddress: string 
     if (threshold < 1 || threshold > attestors.length) return;
     setSubmitError('');
     setSubmitting(true);
+    const pendingId = addToast({ type: 'pending', message: 'Transaction pending…' });
     try {
       const sliceId = await createSlice(
         creatorAddress,
         attestors.map((a) => a.address),
         threshold,
       );
+      removeToast(pendingId);
+      addToast({
+        type: 'success',
+        message: 'Transaction confirmed — quorum slice created.',
+        explorerUrl: `https://stellar.expert/explorer/testnet/tx/${sliceId.toString()}`,
+      });
       setSuccess({ sliceId });
     } catch (err: unknown) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to create slice.');
+      removeToast(pendingId);
+      const msg = err instanceof Error ? err.message : 'Failed to create slice.';
+      addToast({ type: 'error', message: `Transaction failed: ${msg}` });
+      setSubmitError(msg);
     } finally {
       setSubmitting(false);
     }

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent, ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { issueCredential } from '../lib/contracts/quorumProof';
+import { useToast } from '../context/ToastContext';
 
 // Credential types matching the on-chain enum (1-indexed)
 const CREDENTIAL_TYPES = [
@@ -36,6 +37,7 @@ interface SuccessState {
 
 export function IssueCredentialForm({ issuerAddress }: { issuerAddress: string }) {
   const navigate = useNavigate();
+  const { addToast, removeToast } = useToast();
   const [form, setForm] = useState<FormState>({
     subject: '',
     credentialType: 1,
@@ -74,6 +76,7 @@ export function IssueCredentialForm({ issuerAddress }: { issuerAddress: string }
     }
     setErrors({});
     setSubmitting(true);
+    const pendingId = addToast({ type: 'pending', message: 'Transaction pending…' });
     try {
       const credentialId = await issueCredential(
         issuerAddress,
@@ -81,9 +84,18 @@ export function IssueCredentialForm({ issuerAddress }: { issuerAddress: string }
         form.credentialType,
         encodeMetadataHash(form.metadataHash),
       );
+      removeToast(pendingId);
+      addToast({
+        type: 'success',
+        message: 'Transaction confirmed — credential issued.',
+        explorerUrl: `https://stellar.expert/explorer/testnet/tx/${credentialId.toString()}`,
+      });
       setSuccess({ credentialId });
     } catch (err: unknown) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to issue credential.');
+      removeToast(pendingId);
+      const msg = err instanceof Error ? err.message : 'Failed to issue credential.';
+      addToast({ type: 'error', message: `Transaction failed: ${msg}` });
+      setSubmitError(msg);
     } finally {
       setSubmitting(false);
     }

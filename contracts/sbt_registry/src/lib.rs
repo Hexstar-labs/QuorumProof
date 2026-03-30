@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address, Bytes, Env, IntoVal, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, symbol_short, Address, Bytes, Env, IntoVal, Vec, Symbol};
 
 const STANDARD_TTL: u32 = 16_384;
 const EXTENDED_TTL: u32 = 524_288;
@@ -69,7 +69,7 @@ impl SbtRegistryContract {
         // is_revoked panics with CredentialNotFound if the credential doesn't exist.
         let revoked: bool = env.invoke_contract(
             &qp_id,
-            &symbol_short!("is_revoked"),
+            &Symbol::new(&env, "is_revoked"),
             soroban_sdk::vec![&env, credential_id.into_val(&env)],
         );
         assert!(!revoked, "credential is revoked");
@@ -97,8 +97,9 @@ impl SbtRegistryContract {
         env.storage().instance().set(&DataKey::OwnerCredential(owner.clone(), credential_id), &token_id);
 
         let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
-        topics.push_back(symbol_short!("mint").into());
-        env.events().publish(topics, token_id);
+        topics.push_back(symbol_short!("mint").into_val(&env));
+        topics.push_back(token_id.into_val(&env));
+        env.events().publish(topics, token);
         token_id
     }
 
@@ -150,23 +151,28 @@ impl SbtRegistryContract {
     }
 
     /// Burn a soulbound token. Only the owner may call this.
-    pub fn burn(env: Env, owner: Address, token_id: u64) {
+    /// Returns the credential_id linked to this token.
+    pub fn burn(env: Env, owner: Address, token_id: u64) -> u64 {
         owner.require_auth();
         let token: SoulboundToken = env.storage().persistent()
             .get(&DataKey::Token(token_id))
-            .expect("token not found");
-        assert!(token.owner == owner, "only the token owner can burn");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::TokenNotFound));
+        assert!(token.owner == owner, "not the owner");
         env.storage().persistent().remove(&DataKey::Token(token_id));
         env.storage().persistent().remove(&DataKey::Owner(token_id));
+        env.storage().instance().remove(&DataKey::OwnerCredential(owner.clone(), token.credential_id));
         let mut owner_tokens: Vec<u64> = env.storage().persistent()
             .get(&DataKey::OwnerTokens(owner.clone()))
-            .unwrap_or(Vec::new(&env));
-        if let Some(pos) = owner_tokens.iter().position(|id| id == token_id) {
-            owner_tokens.remove(pos as u32);
-        }
+            .expect("owner has no tokens");
+        let pos = owner_tokens.iter().position(|id| id == token_id).expect("token not in owner list");
+        owner_tokens.remove(pos as u32);
         env.storage().persistent().set(&DataKey::OwnerTokens(owner.clone()), &owner_tokens);
-        // Remove uniqueness mapping so the owner can re-mint for the same credential
-        env.storage().instance().remove(&DataKey::OwnerCredential(owner, token.credential_id));
+
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("burn").into_val(&env));
+        topics.push_back(token_id.into_val(&env));
+        env.events().publish(topics, token.id);
+        token.credential_id
     }
 
     /// Initialize the contract with an admin and the quorum_proof contract address.
@@ -201,7 +207,7 @@ impl SbtRegistryContract {
         env.storage().instance().remove(&DataKey::OwnerCredential(owner, token.credential_id));
 
         let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
-        topics.push_back(symbol_short!("burn").into());
+        topics.push_back(symbol_short!("burn").into_val(&env));
         env.events().publish(topics, token_id);
     }
 

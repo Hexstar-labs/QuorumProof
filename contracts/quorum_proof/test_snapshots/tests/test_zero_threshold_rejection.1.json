@@ -103,6 +103,13 @@
                   ]
                 },
                 {
+                  "vec": [
+                    {
+                      "u32": 1
+                    }
+                  ]
+                },
+                {
                   "u32": 0
                 }
               ]
@@ -127,7 +134,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'threshold must be greater than 0' from contract function 'Symbol(obj#13)'"
+                  "string": "caught panic 'threshold must be greater than 0' from contract function 'Symbol(obj#17)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -136,6 +143,13 @@
                   "vec": [
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                },
+                {
+                  "vec": [
+                    {
+                      "u32": 1
                     }
                   ]
                 },
@@ -208,6 +222,13 @@
                       "vec": [
                         {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                        }
+                      ]
+                    },
+                    {
+                      "vec": [
+                        {
+                          "u32": 1
                         }
                       ]
                     },
