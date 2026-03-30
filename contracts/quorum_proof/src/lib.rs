@@ -621,7 +621,7 @@ impl QuorumProofContract {
     /// # Threshold Semantics
     /// The threshold is measured in weight units, not attestor count.
     /// Must be greater than 0 and cannot exceed the total weight sum of all attestors.
-    pub fn update_threshold(env: Env, creator: Address, slice_id: u64, new_threshold: u32) {
+    pub fn update_slice_threshold(env: Env, creator: Address, slice_id: u64, new_threshold: u32) {
         creator.require_auth();
         let mut slice: QuorumSlice = env
             .storage()
@@ -1723,7 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_threshold_success() {
+    fn test_update_slice_threshold_success() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
@@ -1736,7 +1736,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "only the slice creator can update threshold")]
-    fn test_update_threshold_unauthorized_panics() {
+    fn test_update_slice_threshold_unauthorized_panics() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
@@ -1775,12 +1775,12 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "SliceNotFound")]
-    fn test_update_threshold_slice_not_found_panics() {
+    fn test_update_slice_threshold_slice_not_found_panics() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, _) = setup(&env);
         let creator = Address::generate(&env);
-        client.update_threshold(&creator, &999u64, &1u32);
+        client.update_slice_threshold(&creator, &999u64, &1u32);
     }
 
     #[test]
@@ -1982,7 +1982,7 @@ mod tests {
         assert!(client.is_attested(&cred_id, &slice_id)); // threshold=1, met after attestor1
 
         client.add_attestor(&creator, &slice_id, &attestor2, &1u32);
-        client.update_threshold(&creator, &slice_id, &2u32);
+        client.update_slice_threshold(&creator, &slice_id, &2u32);
         assert!(!client.is_attested(&cred_id, &slice_id)); // threshold raised to 2, not met yet
         client.attest(&attestor2, &cred_id, &slice_id);
         assert!(client.is_attested(&cred_id, &slice_id));
@@ -2156,7 +2156,7 @@ mod tests {
         weights.push_back(1u32);
         let slice_id = client.create_slice(&creator, &attestors, &weights, &2u32);
 
-        client.update_threshold(&creator, &slice_id, &1u32);
+        client.update_slice_threshold(&creator, &slice_id, &1u32);
 
         let slice = client.get_slice(&slice_id);
         assert_eq!(slice.threshold, 1);
@@ -2164,7 +2164,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "only the slice creator can update threshold")]
-    fn test_update_threshold_unauthorized_panics() {
+    fn test_update_slice_threshold_unauthorized_panics() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, QuorumProofContract);
@@ -2178,11 +2178,11 @@ mod tests {
         weights.push_back(1u32);
         let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
 
-        client.update_threshold(&non_creator, &slice_id, &1u32);
+        client.update_slice_threshold(&non_creator, &slice_id, &1u32);
     }
 
     #[test]
-    fn test_update_threshold_success() {
+    fn test_update_slice_threshold_success() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, _) = setup(&env);
@@ -2193,7 +2193,7 @@ mod tests {
         weights.push_back(1u32);
         let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
 
-        client.update_threshold(&creator, &slice_id, &1u32);
+        client.update_slice_threshold(&creator, &slice_id, &1u32);
     }
 
     #[test]
