@@ -130,7 +130,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "update_threshold",
+              "function_name": "update_slice_threshold",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -1108,7 +1108,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "update_threshold"
+                "symbol": "update_slice_threshold"
               }
             ],
             "data": {
@@ -1141,7 +1141,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "update_threshold"
+                "symbol": "update_slice_threshold"
               }
             ],
             "data": "void"

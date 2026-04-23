@@ -93,12 +93,12 @@
             "data": {
               "vec": [
                 {
-                  "u64": 1
+                  "u64": 42
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "HasLicense"
+                      "symbol": "HasEmploymentHistory"
                     }
                   ]
                 }
@@ -133,7 +133,7 @@
                   "val": {
                     "vec": [
                       {
-                        "symbol": "HasLicense"
+                        "symbol": "HasEmploymentHistory"
                       }
                     ]
                   }
@@ -143,7 +143,7 @@
                     "symbol": "credential_id"
                   },
                   "val": {
-                    "u64": 1
+                    "u64": 42
                   }
                 },
                 {
