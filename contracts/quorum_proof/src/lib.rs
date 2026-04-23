@@ -56,6 +56,9 @@ pub enum ContractError {
     ContractPaused = 3,
     DuplicateCredential = 4,
     DuplicateAttestor = 5,
+    AttestationExpired = 6,
+    InvalidInput = 7,
+    InvalidAddress = 8,
 }
 
 #[contracttype]
@@ -76,6 +79,8 @@ pub enum DataKey {
     ProofRequests(u64),
     /// Global monotonic counter for proof request IDs
     ProofRequestCount,
+    /// Optional expiry timestamp for attestations on a credential (credential_id)
+    AttestationExpiry(u64),
 }
 
 #[contracttype]
@@ -146,6 +151,7 @@ impl QuorumProofContract {
             !env.storage().instance().has(&DataKey::Admin),
             "already initialized"
         );
+        Self::require_valid_address(&env, &admin);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -201,6 +207,82 @@ impl QuorumProofContract {
         }
     }
 
+    /// Validate that an address is not the zero/default address.
+    /// In Soroban, the Address type guarantees validity at the type level.
+    /// This function exists for API consistency and future extensibility.
+    /// Currently a no-op since Soroban addresses are always valid.
+    fn require_valid_address(_env: &Env, _addr: &Address) {
+        // Soroban's Address type is always valid by construction.
+        // No validation needed, but we keep this function for:
+        // 1. API consistency across all address inputs
+        // 2. Future extensibility if custom validation is needed
+        // 3. Clear documentation of validation intent
+    }
+
+    /// Pre-condition assertion. Panics with `ContractError::InvalidInput` if `cond` is false.
+    fn precondition(env: &Env, cond: bool) {
+        if !cond {
+            panic_with_error!(env, ContractError::InvalidInput);
+        }
+    }
+
+    /// Post-condition assertion. Panics with a static message if `cond` is false.
+    /// Used to assert invariants after state mutations.
+    fn postcondition(cond: bool, _msg: &str) {
+        if !cond {
+            panic!("postcondition violated");
+        }
+    }
+
+    /// Set a condition-based expiry timestamp for attestations on a credential.
+    /// After this timestamp, `is_attestation_expired` returns `true` and
+    /// `is_attested` treats the attestation as invalid.
+    ///
+    /// Only the credential issuer may set this.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+    /// Panics if the caller is not the issuer.
+    /// Panics with `ContractError::InvalidInput` if `expires_at` is not in the future.
+    pub fn set_attestation_expiry(env: Env, issuer: Address, credential_id: u64, expires_at: u64) {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+        let credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+        assert!(credential.issuer == issuer, "only the credential issuer can set attestation expiry");
+        Self::precondition(&env, expires_at > env.ledger().timestamp());
+        env.storage()
+            .instance()
+            .set(&DataKey::AttestationExpiry(credential_id), &expires_at);
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Returns `true` if a condition-based attestation expiry has been set for the credential
+    /// and the current ledger timestamp has passed it.
+    ///
+    /// Returns `false` if no attestation expiry is set (attestations do not expire by condition).
+    ///
+    /// # Panics
+    /// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+    pub fn is_attestation_expired(env: Env, credential_id: u64) -> bool {
+        if !env.storage().instance().has(&DataKey::Credential(credential_id)) {
+            panic_with_error!(&env, ContractError::CredentialNotFound);
+        }
+        match env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AttestationExpiry(credential_id))
+        {
+            Some(expires_at) => env.ledger().timestamp() >= expires_at,
+            None => false,
+        }
+    }
+
     /// Issue a new credential to a subject. Returns the new credential ID.
     ///
     /// # Parameters
@@ -225,11 +307,15 @@ impl QuorumProofContract {
     ) -> u64 {
         issuer.require_auth();
         Self::require_not_paused(&env);
+        // Pre-conditions
+        Self::require_valid_address(&env, &issuer);
+        Self::require_valid_address(&env, &subject);
         assert!(
             credential_type > 0,
             "credential_type must be greater than 0"
         );
         assert!(!metadata_hash.is_empty(), "metadata_hash cannot be empty");
+        Self::precondition(&env, metadata_hash.len() <= 256);
         
         // Check for duplicate credential of same type from same issuer to same subject
         let duplicate_key = DataKey::SubjectIssuerType(subject.clone(), issuer.clone(), credential_type);
@@ -263,6 +349,9 @@ impl QuorumProofContract {
         let mut topics: Vec<String> = Vec::new(&env);
         topics.push_back(topic);
         env.events().publish(topics, event_data);
+
+        // Post-condition: credential must be stored
+        Self::postcondition(env.storage().instance().has(&DataKey::Credential(id)), "credential stored");
         id
     }
 
@@ -400,8 +489,9 @@ impl QuorumProofContract {
     /// # Panics
     /// Does not panic; returns an empty `Vec` if the subject has no credentials.
     pub fn get_credentials_by_subject(env: Env, subject: Address, page: u32, page_size: u32) -> Vec<u64> {
-        assert!(page > 0, "page must be greater than 0");
-        assert!(page_size > 0, "page_size must be greater than 0");
+        Self::require_valid_address(&env, &subject);
+        Self::precondition(&env, page > 0);
+        Self::precondition(&env, page_size > 0);
         let all_creds: Vec<u64> = env.storage()
             .instance()
             .get(&DataKey::SubjectCredentials(subject))
@@ -536,6 +626,7 @@ impl QuorumProofContract {
         threshold: u32,
     ) -> u64 {
         creator.require_auth();
+        Self::require_valid_address(&env, &creator);
         assert!(attestors.len() > 0, "attestors cannot be empty");
         assert!(
             attestors.len() as u32 <= MAX_ATTESTORS_PER_SLICE,
@@ -550,6 +641,10 @@ impl QuorumProofContract {
             threshold <= attestors.len() as u32,
             "threshold cannot exceed attestors length"
         );
+        // Validate each attestor address
+        for a in attestors.iter() {
+            Self::require_valid_address(&env, &a);
+        }
         // Calculate total weight sum
         let mut total_weight: u32 = 0;
         for w in weights.iter() {
@@ -584,6 +679,8 @@ impl QuorumProofContract {
         env.storage()
             .instance()
             .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        // Post-condition: slice must be stored
+        Self::postcondition(env.storage().instance().has(&DataKey::Slice(id)), "slice stored");
         id
     }
 
@@ -660,6 +757,8 @@ impl QuorumProofContract {
     /// the total weight sum (existing + new attestor).
     pub fn add_attestor(env: Env, creator: Address, slice_id: u64, attestor: Address, weight: u32) {
         creator.require_auth();
+        Self::require_valid_address(&env, &creator);
+        Self::require_valid_address(&env, &attestor);
         let mut slice: QuorumSlice = env
             .storage()
             .instance()
@@ -743,6 +842,10 @@ impl QuorumProofContract {
     pub fn attest(env: Env, attestor: Address, credential_id: u64, slice_id: u64) {
         attestor.require_auth();
         Self::require_not_paused(&env);
+        Self::require_valid_address(&env, &attestor);
+        // Pre-condition: credential_id and slice_id must be non-zero
+        Self::precondition(&env, credential_id > 0);
+        Self::precondition(&env, slice_id > 0);
         let credential: Credential = env
             .storage()
             .instance()
@@ -881,6 +984,16 @@ impl QuorumProofContract {
         }
         if let Some(expires_at) = credential.expires_at {
             if env.ledger().timestamp() >= expires_at {
+                return false;
+            }
+        }
+        // Check condition-based attestation expiry
+        if let Some(attest_expires_at) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::AttestationExpiry(credential_id))
+        {
+            if env.ledger().timestamp() >= attest_expires_at {
                 return false;
             }
         }
@@ -3024,5 +3137,230 @@ mod tests {
         env.mock_all_auths();
         let (client, _) = setup(&env);
         assert!(!client.slice_exists(&999u64));
+    }
+}
+
+// ── New feature tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger as _, LedgerInfo};
+    use soroban_sdk::{Bytes, Env};
+
+    fn setup(env: &Env) -> (QuorumProofContractClient<'_>, Address) {
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, QuorumProofContract);
+        let client = QuorumProofContractClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        client.initialize(&admin);
+        (client, admin)
+    }
+
+    fn set_ts(env: &Env, ts: u64) {
+        env.ledger().set(LedgerInfo {
+            timestamp: ts,
+            protocol_version: 20,
+            sequence_number: 1,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
+        });
+    }
+
+    // ── Conditional attestation expiry ────────────────────────────────────────
+
+    #[test]
+    fn test_set_and_check_attestation_expiry_not_expired() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        set_ts(&env, 1_000);
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        client.set_attestation_expiry(&issuer, &cid, &5_000u64);
+        assert!(!client.is_attestation_expired(&cid));
+    }
+
+    #[test]
+    fn test_attestation_expiry_triggers_after_timestamp() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        set_ts(&env, 1_000);
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        client.set_attestation_expiry(&issuer, &cid, &2_000u64);
+        set_ts(&env, 3_000);
+        assert!(client.is_attestation_expired(&cid));
+    }
+
+    #[test]
+    fn test_is_attested_false_after_attestation_expiry() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        set_ts(&env, 1_000);
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = soroban_sdk::Vec::new(&env);
+        weights.push_back(1u32);
+        let sid = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.attest(&attestor, &cid, &sid);
+        assert!(client.is_attested(&cid, &sid));
+        // Set attestation expiry in the past
+        client.set_attestation_expiry(&issuer, &cid, &2_000u64);
+        set_ts(&env, 3_000);
+        assert!(!client.is_attested(&cid, &sid));
+    }
+
+    #[test]
+    fn test_is_attestation_expired_no_expiry_set() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        assert!(!client.is_attestation_expired(&cid));
+    }
+
+    #[test]
+    #[should_panic(expected = "CredentialNotFound")]
+    fn test_is_attestation_expired_missing_credential() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        client.is_attestation_expired(&999u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_set_attestation_expiry_past_timestamp_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        set_ts(&env, 5_000);
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        // expires_at is in the past
+        client.set_attestation_expiry(&issuer, &cid, &1_000u64);
+    }
+
+    // ── Input validation ──────────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "credential_type must be greater than 0")]
+    fn test_issue_credential_zero_type_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        client.issue_credential(&issuer, &subject, &0u32, &metadata, &None);
+    }
+
+    #[test]
+    #[should_panic(expected = "metadata_hash cannot be empty")]
+    fn test_issue_credential_empty_metadata_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let empty = Bytes::new(&env);
+        client.issue_credential(&issuer, &subject, &1u32, &empty, &None);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_issue_credential_metadata_too_long_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        // 257 bytes — exceeds 256 limit
+        let long_hash = Bytes::from_slice(&env, &[b'x'; 257]);
+        client.issue_credential(&issuer, &subject, &1u32, &long_hash, &None);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_attest_zero_credential_id_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = soroban_sdk::Vec::new(&env);
+        weights.push_back(1u32);
+        let sid = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.attest(&attestor, &0u64, &sid);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_attest_zero_slice_id_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        client.attest(&attestor, &cid, &0u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_get_credentials_by_subject_zero_page_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let subject = Address::generate(&env);
+        client.get_credentials_by_subject(&subject, &0u32, &10u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidInput")]
+    fn test_get_credentials_by_subject_zero_page_size_panics() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let subject = Address::generate(&env);
+        client.get_credentials_by_subject(&subject, &1u32, &0u32);
+    }
+
+    // ── Pre/post-condition assertions ─────────────────────────────────────────
+
+    #[test]
+    fn test_postcondition_credential_stored_after_issue() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"ipfs://QmTest");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        // If postcondition passed, credential must exist
+        assert!(client.credential_exists(&cid));
+    }
+
+    #[test]
+    fn test_postcondition_slice_stored_after_create() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let creator = Address::generate(&env);
+        let mut attestors = soroban_sdk::Vec::new(&env);
+        attestors.push_back(Address::generate(&env));
+        let mut weights = soroban_sdk::Vec::new(&env);
+        weights.push_back(1u32);
+        let sid = client.create_slice(&creator, &attestors, &weights, &1u32);
+        assert!(client.slice_exists(&sid));
     }
 }
