@@ -56,6 +56,12 @@ pub enum ContractError {
     ContractPaused = 3,
     DuplicateCredential = 4,
     DuplicateAttestor = 5,
+    // Multi-sig errors: 46-60
+    MultiSigRequirementNotFound = 46,
+    MultiSigAlreadySigned = 47,
+    MultiSigSignerNotAuthorized = 48,
+    MultiSigThresholdExceedsSigners = 49,
+    MultiSigEmptySigners = 50,
 }
 
 #[contracttype]
@@ -76,6 +82,21 @@ pub enum DataKey {
     ProofRequests(u64),
     /// Global monotonic counter for proof request IDs
     ProofRequestCount,
+    /// Multi-sig requirement for a credential
+    MultiSigRequirement(u64),
+    /// Collected multi-sig signatures for a credential
+    MultiSigSignatures(u64),
+}
+
+/// Defines a multi-sig requirement for a credential.
+/// All `required_signers` are the only addresses allowed to sign.
+/// `threshold` is the minimum number of signatures needed.
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiSigRequirement {
+    pub credential_id: u64,
+    pub required_signers: Vec<Address>,
+    pub threshold: u32,
 }
 
 #[contracttype]
@@ -907,7 +928,7 @@ impl QuorumProofContract {
             }
         }
         
-        total_attested_weight >= slice.threshold
+        total_attested_weight >= slice.threshold && Self::is_multisig_approved(&env, credential_id)
     }
 
     /// Returns true if the credential has been revoked.
@@ -1202,6 +1223,112 @@ impl QuorumProofContract {
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    // ── Multi-Sig Attestation (Issue #multi-sig) ─────────────────────────────
+
+    /// Configure a multi-sig requirement for a credential.
+    /// Only the credential issuer may set this.
+    ///
+    /// # Panics
+    /// - `MultiSigEmptySigners` if `required_signers` is empty.
+    /// - `MultiSigThresholdExceedsSigners` if `threshold > required_signers.len()`.
+    /// - `ContractError::CredentialNotFound` if the credential does not exist.
+    pub fn set_multisig_requirement(
+        env: Env,
+        issuer: Address,
+        credential_id: u64,
+        required_signers: Vec<Address>,
+        threshold: u32,
+    ) {
+        issuer.require_auth();
+        let credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+        assert!(credential.issuer == issuer, "only the credential issuer can set multi-sig requirement");
+        if required_signers.is_empty() {
+            panic_with_error!(&env, ContractError::MultiSigEmptySigners);
+        }
+        if threshold == 0 || threshold > required_signers.len() as u32 {
+            panic_with_error!(&env, ContractError::MultiSigThresholdExceedsSigners);
+        }
+        let req = MultiSigRequirement { credential_id, required_signers, threshold };
+        env.storage().instance().set(&DataKey::MultiSigRequirement(credential_id), &req);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Retrieve the multi-sig requirement for a credential.
+    ///
+    /// # Panics
+    /// - `MultiSigRequirementNotFound` if no requirement has been set.
+    pub fn get_multisig_requirement(env: Env, credential_id: u64) -> MultiSigRequirement {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiSigRequirement(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MultiSigRequirementNotFound))
+    }
+
+    /// Record a signature from an authorized signer for a credential's multi-sig requirement.
+    ///
+    /// # Panics
+    /// - `MultiSigRequirementNotFound` if no requirement has been configured.
+    /// - `MultiSigSignerNotAuthorized` if `signer` is not in `required_signers`.
+    /// - `MultiSigAlreadySigned` if `signer` has already signed.
+    pub fn sign_multisig(env: Env, signer: Address, credential_id: u64) {
+        signer.require_auth();
+        let req: MultiSigRequirement = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigRequirement(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::MultiSigRequirementNotFound));
+        // Check signer is authorized
+        let authorized = req.required_signers.iter().any(|s| s == signer);
+        if !authorized {
+            panic_with_error!(&env, ContractError::MultiSigSignerNotAuthorized);
+        }
+        let mut sigs: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigSignatures(credential_id))
+            .unwrap_or(Vec::new(&env));
+        // Check for duplicate signature
+        if sigs.iter().any(|s| s == signer) {
+            panic_with_error!(&env, ContractError::MultiSigAlreadySigned);
+        }
+        sigs.push_back(signer);
+        env.storage().instance().set(&DataKey::MultiSigSignatures(credential_id), &sigs);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Return all addresses that have signed the multi-sig requirement for a credential.
+    /// Returns an empty Vec if no signatures have been collected yet.
+    pub fn get_multisig_signatures(env: Env, credential_id: u64) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiSigSignatures(credential_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns true if the multi-sig threshold has been met for a credential.
+    /// Returns false if no requirement is configured.
+    fn is_multisig_approved(env: &Env, credential_id: u64) -> bool {
+        let req: Option<MultiSigRequirement> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigRequirement(credential_id));
+        match req {
+            None => true, // no multi-sig requirement configured — approved by default
+            Some(r) => {
+                let sigs: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSignatures(credential_id))
+                    .unwrap_or(Vec::new(env));
+                sigs.len() as u32 >= r.threshold
+            }
+        }
     }
 
     // ── Proof Request History (Issue #38) ────────────────────────────────────
@@ -3024,5 +3151,170 @@ mod tests {
         env.mock_all_auths();
         let (client, _) = setup(&env);
         assert!(!client.slice_exists(&999u64));
+    }
+
+    // ── Multi-sig tests ───────────────────────────────────────────────────────
+
+    fn setup_credential_with_slice(env: &Env) -> (QuorumProofContractClient<'_>, u64, u64, Address, Address) {
+        let (client, _admin) = setup(env);
+        let issuer = Address::generate(env);
+        let subject = Address::generate(env);
+        let attestor = Address::generate(env);
+        let metadata = Bytes::from_slice(env, b"ipfs://QmMultiSig");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let mut attestors = Vec::new(env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        (client, cred_id, slice_id, issuer, attestor)
+    }
+
+    #[test]
+    fn test_set_and_get_multisig_requirement() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+        signers.push_back(signer2.clone());
+
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &2u32);
+
+        let req = client.get_multisig_requirement(&cred_id);
+        assert_eq!(req.credential_id, cred_id);
+        assert_eq!(req.threshold, 2);
+        assert_eq!(req.required_signers.len(), 2);
+    }
+
+    #[test]
+    fn test_multisig_no_requirement_is_attested_passes() {
+        // Without a multi-sig requirement, is_attested should behave as before
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, slice_id, _issuer, attestor) = setup_credential_with_slice(&env);
+        client.attest(&attestor, &cred_id, &slice_id);
+        assert!(client.is_attested(&cred_id, &slice_id));
+    }
+
+    #[test]
+    fn test_multisig_blocks_is_attested_until_threshold_met() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, slice_id, issuer, attestor) = setup_credential_with_slice(&env);
+
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+        signers.push_back(signer2.clone());
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &2u32);
+
+        // Quorum slice threshold met, but multi-sig not yet satisfied
+        client.attest(&attestor, &cred_id, &slice_id);
+        assert!(!client.is_attested(&cred_id, &slice_id));
+
+        // First multi-sig signature — still not enough
+        client.sign_multisig(&signer1, &cred_id);
+        assert!(!client.is_attested(&cred_id, &slice_id));
+
+        // Second multi-sig signature — threshold met
+        client.sign_multisig(&signer2, &cred_id);
+        assert!(client.is_attested(&cred_id, &slice_id));
+    }
+
+    #[test]
+    fn test_get_multisig_signatures_returns_collected_signers() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+
+        let signer1 = Address::generate(&env);
+        let signer2 = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer1.clone());
+        signers.push_back(signer2.clone());
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &1u32);
+
+        assert_eq!(client.get_multisig_signatures(&cred_id).len(), 0);
+        client.sign_multisig(&signer1, &cred_id);
+        let collected = client.get_multisig_signatures(&cred_id);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected.get(0).unwrap(), signer1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #47)")]
+    fn test_sign_multisig_duplicate_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+
+        let signer = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer.clone());
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &1u32);
+
+        client.sign_multisig(&signer, &cred_id);
+        client.sign_multisig(&signer, &cred_id); // duplicate — must panic
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #48)")]
+    fn test_sign_multisig_unauthorized_signer_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+
+        let authorized = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(authorized.clone());
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &1u32);
+
+        client.sign_multisig(&unauthorized, &cred_id); // not in required_signers
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #46)")]
+    fn test_get_multisig_requirement_not_found_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, _issuer, _attestor) = setup_credential_with_slice(&env);
+        client.get_multisig_requirement(&cred_id); // no requirement set
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #46)")]
+    fn test_sign_multisig_no_requirement_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, _issuer, _attestor) = setup_credential_with_slice(&env);
+        let signer = Address::generate(&env);
+        client.sign_multisig(&signer, &cred_id); // no requirement configured
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #50)")]
+    fn test_set_multisig_requirement_empty_signers_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+        client.set_multisig_requirement(&issuer, &cred_id, &Vec::new(&env), &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #49)")]
+    fn test_set_multisig_requirement_threshold_exceeds_signers_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, cred_id, _slice_id, issuer, _attestor) = setup_credential_with_slice(&env);
+        let signer = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(signer);
+        // threshold 3 > 1 signer
+        client.set_multisig_requirement(&issuer, &cred_id, &signers, &3u32);
     }
 }
