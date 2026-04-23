@@ -16,6 +16,8 @@ const TOPIC_PROOF_REQUEST: &str = "ProofRequested";
 const STANDARD_TTL: u32 = 16_384;
 const EXTENDED_TTL: u32 = 524_288;
 const MAX_ATTESTORS_PER_SLICE: u32 = 20;
+const MAX_BATCH_SIZE: u32 = 50;
+const MAX_MULTISIG_SIGNERS: u32 = 10;
 
 #[contracttype]
 #[derive(Clone)]
@@ -411,6 +413,7 @@ impl QuorumProofContract {
         issuer.require_auth();
         Self::require_not_paused(&env);
         let n = subjects.len();
+        Self::validate_array_bounds(n, 1, MAX_BATCH_SIZE, "subjects");
         assert!(
             credential_types.len() == n && metadata_hashes.len() == n,
             "input lengths must match"
@@ -948,6 +951,7 @@ impl QuorumProofContract {
     pub fn batch_attest(env: Env, attestor: Address, credential_ids: Vec<u64>, slice_id: u64, expires_at: Option<u64>) {
         attestor.require_auth();
         Self::require_not_paused(&env);
+        Self::validate_array_bounds(credential_ids.len(), 1, MAX_BATCH_SIZE, "credential_ids");
         let slice: QuorumSlice = env.storage().instance()
             .get(&DataKey::Slice(slice_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::SliceNotFound));
@@ -1290,6 +1294,7 @@ impl QuorumProofContract {
         claim_types: Vec<zk_verifier::ClaimType>,
         proofs: Vec<soroban_sdk::Bytes>,
     ) -> Vec<bool> {
+        Self::validate_array_bounds(claim_types.len(), 1, MAX_BATCH_SIZE, "claim_types");
         assert!(
             claim_types.len() == proofs.len(),
             "claim_types and proofs lengths must match"
