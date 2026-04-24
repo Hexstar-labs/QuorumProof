@@ -430,30 +430,6 @@ impl QuorumProofContract {
         }
     }
 
-    /// Record an activity for a credential holder
-    fn record_holder_activity(env: &Env, holder: Address, activity_type: ActivityType, credential_id: u64, actor: Address, slice_id: Option<u64>) {
-        let activity = ActivityRecord {
-            activity_type,
-            credential_id,
-            timestamp: env.ledger().timestamp(),
-            actor,
-            slice_id,
-        };
-        
-        let mut activities: Vec<ActivityRecord> = env
-            .storage()
-            .instance()
-            .get(&DataKey::HolderActivity(holder.clone()))
-            .unwrap_or(Vec::new(env));
-        activities.push_back(activity);
-        env.storage()
-            .instance()
-            .set(&DataKey::HolderActivity(holder), &activities);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-    }
-
     /// Set a condition-based expiry timestamp for attestations on a credential.
     /// After this timestamp, `is_attestation_expired` returns `true` and
     /// `is_attested` treats the attestation as invalid.
@@ -684,10 +660,6 @@ impl QuorumProofContract {
         let mut topics: Vec<String> = Vec::new(env);
         topics.push_back(topic);
         env.events().publish(topics, event_data);
-
-        // Record activity for the holder
-        Self::record_holder_activity(&env, subject.clone(), ActivityType::CredentialIssued, id, issuer.clone(), None);
-        
         id
     }
 
@@ -815,9 +787,6 @@ impl QuorumProofContract {
         let mut topics: Vec<String> = Vec::new(&env);
         topics.push_back(topic);
         env.events().publish(topics, event_data);
-
-        // Record activity for the holder
-        Self::record_holder_activity(&env, credential.subject.clone(), ActivityType::CredentialRevoked, credential_id, issuer.clone(), None);
     }
 
     /// Renew a credential by extending its expiry. Only the original issuer may call this.
@@ -839,9 +808,6 @@ impl QuorumProofContract {
         let mut topics: Vec<String> = Vec::new(&env);
         topics.push_back(topic);
         env.events().publish(topics, event_data);
-
-        // Record activity for the holder
-        Self::record_holder_activity(&env, credential.subject.clone(), ActivityType::CredentialRenewed, credential_id, issuer.clone(), None);
     }
 
     /// Create a quorum slice with weighted attestors. Returns the slice ID.
@@ -1146,14 +1112,6 @@ impl QuorumProofContract {
         env.storage()
             .instance()
             .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-
-        // Record activity for the holder
-        let credential: Credential = env
-            .storage()
-            .instance()
-            .get(&DataKey::Credential(credential_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
-        Self::record_holder_activity(&env, credential.subject.clone(), ActivityType::CredentialAttested, credential_id, attestor.clone(), Some(slice_id));
     }
 
     /// Batch attest multiple credentials in a single transaction.
@@ -1200,14 +1158,6 @@ impl QuorumProofContract {
             let mut topics: Vec<String> = Vec::new(&env);
             topics.push_back(topic);
             env.events().publish(topics, event_data);
-            
-            // Record activity for the holder
-            let credential: Credential = env
-                .storage()
-                .instance()
-                .get(&DataKey::Credential(credential_id))
-                .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
-            Self::record_holder_activity(&env, credential.subject.clone(), ActivityType::CredentialAttested, credential_id, attestor.clone(), Some(slice_id));
         }
         let count: u64 = env.storage().instance()
             .get(&DataKey::AttestorCount(attestor.clone()))
@@ -1292,38 +1242,7 @@ impl QuorumProofContract {
             }
         }
         
-        let is_sufficient = total_attested_weight >= slice.threshold;
-        let is_attested_result = is_sufficient && Self::is_multisig_approved(&env, credential_id);
-        
-        // Record consensus decision if threshold is met
-        if is_sufficient {
-            let decision = ConsensusDecision {
-                decision_id: env.storage().instance().get(&DataKey::SliceConsensusHistory(slice_id))
-                    .unwrap_or(Vec::new(&env))
-                    .len() as u64 + 1,
-                slice_id,
-                credential_id,
-                timestamp: now,
-                required_weight_threshold: slice.threshold,
-                achieved_weight: total_attested_weight,
-                total_weight: slice.weights.iter().sum(),
-            };
-            
-            let mut history: Vec<ConsensusDecision> = env
-                .storage()
-                .instance()
-                .get(&DataKey::SliceConsensusHistory(slice_id))
-                .unwrap_or(Vec::new(&env));
-            history.push_back(decision);
-            env.storage()
-                .instance()
-                .set(&DataKey::SliceConsensusHistory(slice_id), &history);
-            env.storage()
-                .instance()
-                .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        }
-        
-        is_attested_result
+        total_attested_weight >= slice.threshold && Self::is_multisig_approved(&env, credential_id)
     }
 
     /// Returns true if the credential has been revoked.
@@ -1462,14 +1381,6 @@ impl QuorumProofContract {
         let mut topics: Vec<String> = Vec::new(&env);
         topics.push_back(topic);
         env.events().publish(topics, event_data);
-
-        // Record activity for the holder
-        let credential: Credential = env
-            .storage()
-            .instance()
-            .get(&DataKey::Credential(credential_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
-        Self::record_holder_activity(&env, credential.subject.clone(), ActivityType::AttestationExpired, credential_id, attestor.clone(), None);
     }
 
     /// Returns the number of attestations recorded for a credential.
@@ -2083,265 +1994,6 @@ impl QuorumProofContract {
         env.storage().instance()
             .get(&DataKey::Challenge(challenge_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::ChallengeNotFound))
-    }
-    /// Record an activity for a credential holder
-    fn record_holder_activity(env: &Env, holder: Address, activity_type: ActivityType, credential_id: u64, actor: Address, slice_id: Option<u64>) {
-        let activity = ActivityRecord {
-            activity_type,
-            credential_id,
-            timestamp: env.ledger().timestamp(),
-            actor,
-            slice_id,
-        };
-        
-        let mut activities: Vec<ActivityRecord> = env
-            .storage()
-            .instance()
-            .get(&DataKey::HolderActivity(holder.clone()))
-            .unwrap_or(Vec::new(env));
-        activities.push_back(activity);
-        env.storage()
-            .instance()
-            .set(&DataKey::HolderActivity(holder), &activities);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-    }
-
-    /// Track all credential-related activities per holder
-    /// Activity log stored on-chain
-    /// Returns paginated activity records for a holder
-    pub fn get_holder_activity(env: Env, holder: Address, page: u32, page_size: u32) -> Vec<ActivityRecord> {
-        Self::require_not_paused(&env);
-        let mut activities: Vec<ActivityRecord> = env
-            .storage()
-            .instance()
-            .get(&DataKey::HolderActivity(holder.clone()))
-            .unwrap_or(Vec::new(&env));
-        let total = activities.len();
-        let start = (page - 1).saturating_mul(page_size);
-        let mut result = Vec::new(&env);
-        for i in start..start.saturating_add(page_size) {
-            if i >= total {
-                break;
-            }
-            if let Some(activity) = activities.get(i) {
-                result.push_back(activity);
-            }
-        }
-        result
-    }
-
-    /// Store historical consensus decisions per slice
-    /// Returns paginated consensus history for a slice
-    pub fn get_slice_consensus_history(env: Env, slice_id: u64, page: u32, page_size: u32) -> Vec<ConsensusDecision> {
-        Self::require_not_paused(&env);
-        let mut history: Vec<ConsensusDecision> = env
-            .storage()
-            .instance()
-            .get(&DataKey::SliceConsensusHistory(slice_id))
-            .unwrap_or(Vec::new(&env));
-        let total = history.len();
-        let start = (page - 1).saturating_mul(page_size);
-        let mut result = Vec::new(&env);
-        for i in start..start.saturating_add(page_size) {
-            if i >= total {
-                break;
-            }
-            if let Some(decision) = history.get(i) {
-                result.push_back(decision);
-            }
-        }
-        result
-    }
-
-    /// Structured process for adding new slice members
-    /// Returns the new onboarding request ID
-    pub fn initiate_member_onboarding(
-        env: Env,
-        requester: Address,
-        slice_id: u64,
-        proposed_member: Address,
-        proposed_weight: u32,
-    ) -> u64 {
-        requester.require_auth();
-        Self::require_not_paused(&env);
-        
-        // Verify slice exists
-        let slice: QuorumSlice = env
-            .storage()
-            .instance()
-            .get(&DataKey::Slice(slice_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SliceNotFound));
-        
-        // Verify requester is in the slice
-        let mut requester_in_slice = false;
-        for a in slice.attestors.iter() {
-            if a == requester {
-                requester_in_slice = true;
-                break;
-            }
-        }
-        assert!(requester_in_slice, "only slice members can initiate onboarding");
-        
-        // Verify proposed member is not already in the slice
-        for a in slice.attestors.iter() {
-            if a == proposed_member {
-                panic_with_error!(&env, ContractError::DuplicateAttestor);
-            }
-        }
-        
-        // Verify proposed weight is valid
-        assert!(proposed_weight > 0, "weight must be greater than 0");
-        
-        let mut total_weight: u32 = 0;
-        for w in slice.weights.iter() {
-            total_weight = total_weight.saturating_add(w);
-        }
-        assert!(proposed_weight <= total_weight, "proposed weight cannot exceed current total weight");
-        
-        let request_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::OnboardingRequestCount)
-            .unwrap_or(0u64)
-            + 1;
-        
-        let request = OnboardingRequest {
-            id: request_id,
-            slice_id,
-            requester: requester.clone(),
-            proposed_member: proposed_member.clone(),
-            proposed_weight,
-            status: OnboardingStatus::Pending,
-            created_at: env.ledger().timestamp(),
-            votes: Vec::new(&env),
-        };
-        
-        // Store individual request
-        env.storage()
-            .instance()
-            .set(&DataKey::OnboardingRequest(request_id), &request);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        // Add to active requests list
-        let mut active_requests: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::OnboardingRequests)
-            .unwrap_or(Vec::new(&env));
-        active_requests.push_back(request_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::OnboardingRequests, &active_requests);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        // Update counter
-        env.storage()
-            .instance()
-            .set(&DataKey::OnboardingRequestCount, &request_id);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        request_id
-    }
-
-    /// Mechanism for resolving disputes between slice members
-    /// Returns the new dispute ID
-    pub fn initiate_dispute(
-        env: Env,
-        initiator: Address,
-        slice_id: u64,
-        accused: Address,
-        reason: String,
-    ) -> u64 {
-        initiator.require_auth();
-        Self::require_not_paused(&env);
-        
-        // Verify slice exists
-        let slice: QuorumSlice = env
-            .storage()
-            .instance()
-            .get(&DataKey::Slice(slice_id))
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::SliceNotFound));
-        
-        // Verify initiator is in the slice
-        let mut initiator_in_slice = false;
-        for a in slice.attestors.iter() {
-            if a == initiator {
-                initiator_in_slice = true;
-                break;
-            }
-        }
-        assert!(initiator_in_slice, "only slice members can initiate disputes");
-        
-        // Verify accused is in the slice
-        let mut accused_in_slice = false;
-        for a in slice.attestors.iter() {
-            if a == accused {
-                accused_in_slice = true;
-                break;
-            }
-        }
-        assert!(accused_in_slice, "accused must be a member of the slice");
-        
-        // Verify initiator and accused are different
-        assert!(initiator != accused, "initiator and accused must be different");
-        
-        let dispute_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DisputeCount)
-            .unwrap_or(0u64)
-            + 1;
-        
-        let dispute = Dispute {
-            id: dispute_id,
-            slice_id,
-            initiator: initiator.clone(),
-            accused: accused.clone(),
-            reason,
-            status: DisputeStatus::Active,
-            created_at: env.ledger().timestamp(),
-            votes: Vec::new(&env),
-        };
-        
-        // Store individual dispute
-        env.storage()
-            .instance()
-            .set(&DataKey::Dispute(dispute_id), &dispute);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        // Add to active disputes list
-        let mut active_disputes: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Disputes)
-            .unwrap_or(Vec::new(&env));
-        active_disputes.push_back(dispute_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::Disputes, &active_disputes);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        // Update counter
-        env.storage()
-            .instance()
-            .set(&DataKey::DisputeCount, &dispute_id);
-        env.storage()
-            .instance()
-            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
-        
-        dispute_id
     }
 }
 
