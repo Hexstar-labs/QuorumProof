@@ -122,6 +122,7 @@ pub struct Credential {
     pub metadata_hash: soroban_sdk::Bytes,
     pub revoked: bool,
     pub expires_at: Option<u64>,
+    pub version: u32,
 }
 
 /// A single proof request record, capturing who requested proof of a credential and when.
@@ -363,7 +364,7 @@ impl QuorumProofContract {
         }
         
         let id: u64 = env.storage().instance().get(&DataKey::CredentialCount).unwrap_or(0u64) + 1;
-        let credential = Credential { id, subject: subject.clone(), issuer: issuer.clone(), credential_type, metadata_hash, revoked: false, expires_at };
+        let credential = Credential { id, subject: subject.clone(), issuer: issuer.clone(), credential_type, metadata_hash, revoked: false, expires_at, version: 1 };
         env.storage().instance().set(&DataKey::Credential(id), &credential);
         env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
         env.storage().instance().set(&DataKey::CredentialCount, &id);
@@ -465,6 +466,7 @@ impl QuorumProofContract {
             metadata_hash,
             revoked: false,
             expires_at,
+            version: 1,
         };
         env.storage()
             .instance()
@@ -519,6 +521,41 @@ impl QuorumProofContract {
             );
         }
         credential
+    }
+
+    /// Update the metadata hash of a credential and increment its version.
+    ///
+    /// Only the original issuer may call this function.
+    ///
+    /// # Parameters
+    /// - `issuer`: The address that originally issued the credential; must authorize.
+    /// - `credential_id`: The ID of the credential to update.
+    /// - `new_metadata_hash`: The new metadata hash to store.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+    /// Panics if the caller is not the original issuer.
+    pub fn update_metadata(
+        env: Env,
+        issuer: Address,
+        credential_id: u64,
+        new_metadata_hash: soroban_sdk::Bytes,
+    ) {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+        assert!(!new_metadata_hash.is_empty(), "metadata_hash cannot be empty");
+        let mut credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+        assert!(credential.issuer == issuer, "only the issuer may update metadata");
+        credential.metadata_hash = new_metadata_hash;
+        credential.version += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::Credential(credential_id), &credential);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
     }
 
     /// Return all credential IDs issued to a subject.
@@ -2512,6 +2549,30 @@ mod tests {
         let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &Some(2_000u64));
         set_ledger_timestamp(&env, 3_000);
         client.get_credential(&id);
+    }
+
+    #[test]
+    fn test_version_increments_on_update_metadata() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let cred_v1 = client.get_credential(&id);
+        assert_eq!(cred_v1.version, 1);
+
+        let new_metadata = Bytes::from_slice(&env, b"QmUpdatedHash0000000000000000000000");
+        client.update_metadata(&issuer, &id, &new_metadata);
+        let cred_v2 = client.get_credential(&id);
+        assert_eq!(cred_v2.version, 2);
+        assert_eq!(cred_v2.metadata_hash, new_metadata);
+
+        client.update_metadata(&issuer, &id, &metadata);
+        let cred_v3 = client.get_credential(&id);
+        assert_eq!(cred_v3.version, 3);
     }
 
     #[test]
