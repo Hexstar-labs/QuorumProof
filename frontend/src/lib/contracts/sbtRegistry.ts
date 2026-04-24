@@ -28,6 +28,22 @@ export interface SoulboundToken {
   metadata_uri: Uint8Array;
 }
 
+export enum DisputeStatus {
+  Open = 0,
+  Upheld = 1,
+  Dismissed = 2,
+}
+
+export interface Dispute {
+  id: bigint;
+  token_id: bigint;
+  initiator: string;
+  accused: string;
+  status: DisputeStatus;
+  uphold_votes: string[];
+  dismiss_votes: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -124,4 +140,35 @@ export async function ownerOf(tokenId: bigint | number): Promise<string> {
 /** Return all token IDs owned by a given address. */
 export async function getTokensByOwner(owner: string): Promise<bigint[]> {
   return simulate<bigint[]>('get_tokens_by_owner', [addr(owner)]);
+}
+
+/** Open a dispute against an SBT holder or issuer. */
+export async function initiateDispute(
+  initiator: string,
+  tokenId: bigint | number,
+  accused: string,
+): Promise<bigint> {
+  return simulate<bigint>('initiate_dispute', [
+    addr(initiator),
+    u64(tokenId),
+    addr(accused),
+  ]);
+}
+
+/** Vote on an open dispute. Holders may vote once per dispute. */
+export async function voteOnDispute(
+  voter: string,
+  disputeId: bigint | number,
+  uphold: boolean,
+): Promise<void> {
+  return simulate<void>('vote_on_dispute', [
+    addr(voter),
+    u64(disputeId),
+    nativeToScVal(uphold),
+  ]);
+}
+
+/** Retrieve a dispute by ID. */
+export async function getDispute(disputeId: bigint | number): Promise<Dispute> {
+  return simulate<Dispute>('get_dispute', [u64(disputeId)]);
 }
