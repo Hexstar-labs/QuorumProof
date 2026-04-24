@@ -12,6 +12,7 @@ const Verify = lazy(() => import('./pages/Verify').then(module => ({ default: mo
 const QuorumSlice = lazy(() => import('./pages/QuorumSlice').then(module => ({ default: module.default })));
 const CredentialDetail = lazy(() => import('./pages/CredentialDetail').then(module => ({ default: module.default })));
 const IssueCredential = lazy(() => import('./pages/IssueCredential').then(module => ({ default: module.default })));
+const Feedback = lazy(() => import('./pages/Feedback').then(module => ({ default: module.default })));
 
 // Loading fallback
 const LoadingFallback = () => (
@@ -48,6 +49,7 @@ function AppContent() {
           <Route path="/slice/new" element={<WalletGuard><QuorumSlice /></WalletGuard>} />
           <Route path="/credential/issue" element={<WalletGuard><IssueCredential /></WalletGuard>} />
           <Route path="/credential/:id" element={<CredentialDetail />} />
+          <Route path="/feedback" element={<Feedback />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
