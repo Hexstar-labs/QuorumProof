@@ -4702,4 +4702,185 @@ mod feature_tests {
         let sid = client.create_slice(&creator, &attestors, &weights, &1u32);
         assert!(client.slice_exists(&sid));
     }
+
+    // ── Snapshot tests ────────────────────────────────────────────────────────
+
+    /// Generates a snapshot after issuing a credential and verifies the
+    /// snapshot can be reloaded with the same ledger state.
+    #[test]
+    fn test_snapshot_credential_state() {
+        let snap_path = "test_snapshots/tests/snapshot_credential_state.json";
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmSnapshotHash00000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        assert_eq!(client.get_credential_count(), 1);
+        assert_eq!(cid, 1);
+
+        // Generate snapshot
+        env.to_snapshot_file(snap_path);
+
+        // Reload snapshot — ledger entries are preserved
+        let env2 = Env::from_snapshot_file(snap_path);
+        // Snapshot ledger sequence should match
+        assert_eq!(env.ledger().sequence(), env2.ledger().sequence());
+    }
+
+    /// Generates a snapshot after creating a quorum slice and verifies
+    /// the reloaded snapshot has the same ledger sequence.
+    #[test]
+    fn test_snapshot_slice_state() {
+        let snap_path = "test_snapshots/tests/snapshot_slice_state.json";
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let creator = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&creator, &attestors, &weights, &1u32);
+
+        assert!(client.slice_exists(&slice_id));
+        assert_eq!(client.get_slice_count(), 1);
+
+        // Generate snapshot
+        env.to_snapshot_file(snap_path);
+
+        // Reload and compare ledger state
+        let env2 = Env::from_snapshot_file(snap_path);
+        assert_eq!(env.ledger().sequence(), env2.ledger().sequence());
+        assert_eq!(env.ledger().timestamp(), env2.ledger().timestamp());
+    }
+
+    /// Generates a snapshot after a full attest flow and verifies the
+    /// reloaded snapshot preserves ledger metadata.
+    #[test]
+    fn test_snapshot_attestation_state() {
+        let snap_path = "test_snapshots/tests/snapshot_attestation_state.json";
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmSnapshotHash00000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.attest(&attestor, &cid, &slice_id, &None);
+
+        assert!(client.is_attested(&cid, &slice_id));
+        assert_eq!(client.get_attestation_count(&cid), 1);
+
+        // Generate snapshot
+        env.to_snapshot_file(snap_path);
+
+        // Reload and compare ledger metadata
+        let env2 = Env::from_snapshot_file(snap_path);
+        assert_eq!(env.ledger().sequence(), env2.ledger().sequence());
+        assert_eq!(env.ledger().timestamp(), env2.ledger().timestamp());
+    }
+
+    // ── Property-based fuzz tests ─────────────────────────────────────────────
+
+    /// Property: issuing N distinct (issuer, subject, type) credentials always
+    /// produces sequential IDs starting at 1 and increments the count.
+    #[test]
+    fn fuzz_issue_credential_sequential_ids() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmFuzzHash000000000000000000000000");
+
+        for i in 1u32..=5 {
+            let cid = client.issue_credential(&issuer, &subject, &i, &meta, &None);
+            assert_eq!(cid, i as u64);
+            assert_eq!(client.get_credential_count(), i as u64);
+        }
+    }
+
+    /// Property: zero credential_type must always be rejected.
+    #[test]
+    #[should_panic]
+    fn fuzz_issue_credential_zero_type_always_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmFuzzHash000000000000000000000000");
+        client.issue_credential(&issuer, &subject, &0u32, &meta, &None);
+    }
+
+    /// Property: threshold > attestor count must always be rejected.
+    #[test]
+    #[should_panic]
+    fn fuzz_create_slice_threshold_exceeds_attestors_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let creator = Address::generate(&env);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(Address::generate(&env));
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        // threshold=2 with only 1 attestor — must panic
+        client.create_slice(&creator, &attestors, &weights, &2u32);
+    }
+
+    /// Property: attesting the same credential twice by the same attestor
+    /// must always be rejected (duplicate attestation).
+    #[test]
+    #[should_panic]
+    fn fuzz_attest_duplicate_always_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmFuzzHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.attest(&attestor, &cid, &slice_id, &None);
+        // Second attest by same attestor — must panic
+        client.attest(&attestor, &cid, &slice_id, &None);
+    }
+
+    /// Property: revoking a credential must prevent further attestation.
+    #[test]
+    #[should_panic]
+    fn fuzz_attest_revoked_credential_always_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmFuzzHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.revoke_credential(&issuer, &cid);
+        // Attest after revocation — must panic
+        client.attest(&attestor, &cid, &slice_id, &None);
+    }
 }

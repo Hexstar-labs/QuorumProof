@@ -9,3 +9,4 @@ export { EmptyState } from './EmptyState';
 export { Navbar } from './Navbar';
 export { AppLayout } from './AppLayout';
 export { ToastContainer } from './ToastContainer';
+export { FeedbackForm } from './FeedbackForm';

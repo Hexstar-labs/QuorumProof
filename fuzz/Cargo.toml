@@ -1,0 +1,38 @@
+[package]
+name = "quorum-proof-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+quorum_proof = { path = "../contracts/quorum_proof", features = ["testutils"] }
+sbt_registry = { path = "../contracts/sbt_registry", features = ["testutils"] }
+zk_verifier = { path = "../contracts/zk_verifier", features = ["testutils"] }
+
+[[bin]]
+name = "fuzz_quorum_proof"
+path = "fuzz_targets/fuzz_quorum_proof.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_sbt_registry"
+path = "fuzz_targets/fuzz_sbt_registry.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_zk_verifier"
+path = "fuzz_targets/fuzz_zk_verifier.rs"
+test = false
+doc = false
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
