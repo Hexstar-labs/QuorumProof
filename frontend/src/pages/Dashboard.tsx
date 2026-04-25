@@ -1,166 +1,109 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
 import { Navbar } from '../components/Navbar';
-import { useFreighter } from '../lib/hooks/useFreighter';
+import { CredentialCard } from '../components/CredentialCard';
+import { CredentialCardSkeleton } from '../components/CredentialCardSkeleton';
+import { EmptyState } from '../components/EmptyState';
+import { useWallet } from '../hooks';
 import {
   getCredentialsBySubject,
   getCredential,
-  isExpired,
+  isAttested,
   getAttestors,
-  decodeMetadataHash,
+  getSlice,
+  isExpired,
 } from '../stellar';
+import { type CredCardData } from '../lib/credentialUtils';
 
-const CREDENTIAL_TYPES: Record<number, string> = {
-  1: '🎓 Degree',
-  2: '🏛️ License',
-  3: '💼 Employment',
-  4: '📜 Certification',
-  5: '🔬 Research',
-};
-
-function credTypeLabel(n: number | bigint) {
-  return CREDENTIAL_TYPES[Number(n)] || `Type ${n}`;
-}
-
-function formatTimestamp(ts: number | bigint | null | undefined) {
-  if (!ts) return 'Never';
-  const d = new Date(Number(ts) * 1000);
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-function formatAddress(addr: string) {
-  if (!addr || addr.length < 10) return addr || '—';
-  return addr.slice(0, 8) + '…' + addr.slice(-6);
-}
-
-interface CredentialData {
-  id: bigint;
-  subject: string;
-  issuer: string;
-  credential_type: number;
-  metadata_hash: Uint8Array;
-  revoked: boolean;
-  expires_at: bigint | null;
-}
-
-interface CredCard {
-  credential: CredentialData;
-  attestors: string[];
-  expired: boolean;
-}
-
-function CredentialCard({ card }: { card: CredCard }) {
-  const navigate = useNavigate();
-  const { credential, attestors, expired } = card;
-  const metaStr = decodeMetadataHash(credential.metadata_hash);
-
-  let statusClass: string, statusLabel: string, statusIcon: string;
-  if (credential.revoked) {
-    statusClass = 'revoked'; statusIcon = '🚫'; statusLabel = 'Revoked';
-  } else if (expired) {
-    statusClass = 'expired'; statusIcon = '⏰'; statusLabel = 'Expired';
-  } else if (attestors.length === 0) {
-    statusClass = 'pending'; statusIcon = '⏳'; statusLabel = 'Pending Attestation';
-  } else {
-    statusClass = 'valid'; statusIcon = '✅'; statusLabel = 'Attested';
-  }
-
-  return (
-    <div className="cred-card">
-      <div className={`cred-card__header cred-card__header--${statusClass}`}>
-        <div className="cred-card__type">{credTypeLabel(credential.credential_type)}</div>
-        <div className={`badge badge--${statusClass}`}>{statusIcon} {statusLabel}</div>
-      </div>
-      <div className="cred-card__body">
-        <h3 className="cred-card__id">Credential #{credential.id.toString()}</h3>
-        <div className="cred-card__meta">
-          <div className="meta-row">
-            <span className="meta-label">Issuer</span>
-            <span className="meta-value mono" title={credential.issuer}>{formatAddress(credential.issuer)}</span>
-          </div>
-          <div className="meta-row">
-            <span className="meta-label">Metadata</span>
-            <span className="meta-value mono">{metaStr}</span>
-          </div>
-          {credential.expires_at && (
-            <div className="meta-row">
-              <span className="meta-label">Expires</span>
-              <span className="meta-value">{formatTimestamp(credential.expires_at)}</span>
-            </div>
-          )}
-        </div>
-        <div className="cred-card__attestors">
-          <div className="attestors-header">
-            <span className="meta-label">Quorum Slice Attestors</span>
-            <span className={`badge badge--${attestors.length > 0 ? 'gray' : 'red'}`} style={{ fontSize: '10px' }}>
-              {attestors.length} Node{attestors.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-          {attestors.length === 0 ? (
-            <div className="attestors-empty">Awaiting slice signatures</div>
-          ) : (
-            <div className="attestor-mini-list">
-              {attestors.map((addr) => (
-                <div key={addr} className="attestor-mini-item">
-                  <span>🏛️</span>
-                  <span className="mono" title={addr}>{formatAddress(addr)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="cred-card__footer">
-        <button
-          className="btn btn--sm btn--ghost"
-          style={{ width: '100%' }}
-          onClick={() => navigate(`/verify?credentialId=${credential.id}`)}
-        >
-          View Public Page →
-        </button>
-      </div>
-    </div>
-  );
-}
-
-export function Dashboard() {
-  const { address, isInitializing, connect } = useFreighter();
-  const [cards, setCards] = useState<CredCard[]>([]);
+export default function Dashboard() {
+  const { address, disconnect } = useWallet();
+  const [cards, setCards] = useState<CredCardData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+
+  const fetchCredentials = useCallback(async (walletAddress: string) => {
+    setLoading(true);
+    setError(null);
+    setCards([]);
+
+    const sliceIdRaw = localStorage.getItem('qp-slice-id');
+    const sliceId = sliceIdRaw ? BigInt(sliceIdRaw) : null;
+
+    try {
+      const ids: bigint[] = await getCredentialsBySubject(walletAddress);
+
+      if (!ids || ids.length === 0) {
+        setCards([]);
+        return;
+      }
+
+      const results = await Promise.all(
+        ids.map(async (id): Promise<CredCardData> => {
+          try {
+            const [credential, expired] = await Promise.all([
+              getCredential(id),
+              isExpired(id).catch(() => false),
+            ]);
+
+            let attested = false;
+            let slice = null;
+            let sliceError = false;
+
+            if (sliceId !== null) {
+              attested = await isAttested(id, sliceId).catch((err) => {
+                console.error(`isAttested failed for credential ${id}:`, err);
+                return false;
+              });
+              try {
+                slice = await getSlice(sliceId);
+              } catch (err) {
+                console.error(`getSlice failed for slice ${sliceId}:`, err);
+                sliceError = true;
+              }
+            } else {
+              const attestors: string[] = await getAttestors(id).catch(() => []);
+              attested = attestors.length > 0;
+            }
+
+            return { credential, attested, slice, expired, sliceError, credError: null };
+          } catch (err) {
+            // Per-card error — return a placeholder so the grid still renders
+            const msg = err instanceof Error ? err.message : 'Failed to load credential';
+            return {
+              credential: {
+                id,
+                subject: '',
+                issuer: '',
+                credential_type: 0,
+                metadata_hash: new Uint8Array(),
+                revoked: false,
+                expires_at: null,
+              },
+              attested: false,
+              slice: null,
+              expired: false,
+              sliceError: false,
+              credError: msg,
+            };
+          }
+        })
+      );
+
+      setCards(results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load credentials.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!address) return;
-    setLoading(true);
-    setError(null);
+    fetchCredentials(address);
+  }, [address, retryKey, fetchCredentials]);
 
-    const fetchAll = async () => {
-      try {
-        const ids: bigint[] = await getCredentialsBySubject(address);
-        if (!ids || ids.length === 0) {
-          setCards([]);
-          return;
-        }
-        const results = await Promise.all(
-          ids.map(async (id) => {
-            const [credential, attestors, expired] = await Promise.all([
-              getCredential(id),
-              getAttestors(id),
-              isExpired(id).catch(() => false),
-            ]);
-            return { credential, attestors, expired } as CredCard;
-          })
-        );
-        setCards(results);
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : 'Failed to load credentials.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchAll();
-  }, [address]);
+  const sliceIdRaw = localStorage.getItem('qp-slice-id');
+  const sliceId = sliceIdRaw ? BigInt(sliceIdRaw) : null;
 
   return (
     <>
@@ -169,79 +112,87 @@ export function Dashboard() {
         <header className="dashboard-header">
           <div>
             <h1 className="dashboard-title">Credential Dashboard</h1>
-            <p className="dashboard-subtitle">Manage and track your verifiable credentials</p>
+            <p className="dashboard-subtitle">Your verifiable credentials on Stellar Soroban</p>
           </div>
-
-          {/* Wallet state */}
-          {!isInitializing && !address && (
-            <div className="wallet-sim-card">
-              <div className="wallet-sim__label">Connect your Freighter wallet to view credentials</div>
-              <button className="btn btn--primary" onClick={connect}>Connect Wallet</button>
-            </div>
-          )}
           {address && (
             <div className="wallet-sim-card">
               <div className="wallet-sim__label">Connected Address</div>
-              <div className="mono" style={{ fontSize: '13px', wordBreak: 'break-all' }}>{address}</div>
+              <div className="mono" style={{ fontSize: '12px', wordBreak: 'break-all' }}>
+                {address}
+              </div>
+              <button
+                className="btn btn--ghost btn--sm"
+                style={{ marginTop: '8px' }}
+                onClick={disconnect}
+              >
+                Disconnect
+              </button>
             </div>
           )}
         </header>
 
         <div className="dashboard-content">
-          {!address && !isInitializing && (
-            <div className="empty-state">
-              <div className="empty-state__icon">👛</div>
-              <div className="empty-state__title">No wallet connected</div>
-              <p>Connect your Freighter wallet to view your credentials.</p>
+          {/* Loading credentials */}
+          {loading && (
+            <div className="dashboard-grid">
+              {[1, 2, 3].map((i) => (
+                <CredentialCardSkeleton key={`skeleton-${i}`} />
+              ))}
             </div>
           )}
 
-          {isInitializing && (
-            <div className="loading-state">
-              <div className="spinner" />
-              <p>Checking wallet…</p>
-            </div>
-          )}
-
-          {address && loading && (
-            <div className="loading-state">
-              <div className="spinner" />
-              <p>Loading your credentials…</p>
-            </div>
-          )}
-
-          {address && !loading && error && (
+          {/* Top-level fetch error */}
+          {!loading && error && (
             <div className="error-card">
               <div className="error-card__icon">⚠️</div>
               <div>
                 <div className="error-card__title">Could Not Load Credentials</div>
                 <div className="error-card__msg">{error}</div>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  style={{ marginTop: '12px' }}
+                  onClick={() => setRetryKey((k: number) => k + 1)}
+                >
+                  Retry
+                </button>
               </div>
             </div>
           )}
 
-          {address && !loading && !error && cards.length === 0 && (
-            <div className="empty-state" style={{ marginTop: 48, border: '1px dashed var(--border)', borderRadius: 'var(--radius-lg)' }}>
-              <div className="empty-state__icon">📭</div>
-              <div className="empty-state__title">No credentials found</div>
-              <p>You haven't been issued any credentials yet.</p>
-            </div>
+          {/* Empty state */}
+          {!loading && !error && cards.length === 0 && (
+            <EmptyState address={address!} />
           )}
 
-          {cards.length > 0 && (
+          {/* Credential grid */}
+          {!loading && !error && cards.length > 0 && (
             <div className="dashboard-grid">
-              {cards.map((card) => (
-                <CredentialCard key={card.credential.id.toString()} card={card} />
+              {cards.map((card: CredCardData) => (
+                <CredentialCard
+                  key={card.credential.id.toString()}
+                  data={card}
+                  sliceId={sliceId}
+                />
               ))}
             </div>
           )}
         </div>
       </main>
+
       <footer className="footer">
         <div className="container">
-          Powered by <a href="https://stellar.org" target="_blank" rel="noopener">Stellar Soroban</a>
-          {' · '}
-          <a href="https://github.com/Phantomcall/QuorumProof" target="_blank" rel="noopener">QuorumProof</a>
+          Powered by{' '}
+          <a href="https://stellar.org" target="_blank" rel="noopener">
+            Stellar Soroban
+          </a>{' '}
+          ·{' '}
+          <a
+            href="https://github.com/Phantomcall/QuorumProof"
+            target="_blank"
+            rel="noopener"
+          >
+            QuorumProof
+          </a>
         </div>
       </footer>
     </>

@@ -16,11 +16,19 @@ Each node in the slice co-signs a **Soulbound Token (SBT)** on Stellar, creating
 
 This applies the Stellar whitepaper's "individual trust decisions" model to a high-stakes professional use case.
 
+## ⚠️ ZK Verification — Non-Functional Stub
+
+> **Do not use `verify_claim` in production.**
+> The `zk_verifier` contract accepts **any non-empty byte string** as a valid proof.
+> It performs **no cryptographic verification** and provides **no privacy guarantees**.
+> It is admin-gated to limit exposure, but the gate is not a substitute for real ZK logic.
+> Real proof verification (Groth16/PLONK) is tracked in [#ZK-IMPL](https://github.com/cryptonautt/QuorumProof/issues) and targeted for v1.1.
+
 ## 🚀 Features
 
 - **Audit Slices**: Define your own quorum of trusted attestors (university, licensing body, employers)
 - **Soulbound Tokens (SBTs)**: Non-transferable on-chain credentials tied to your Stellar identity
-- **Conditional Verification**: Firms verify specific claims (e.g. "has a Mechanical Engineering degree") without accessing full transcripts — powered by Zero-Knowledge proofs on Soroban
+- **Conditional Verification (stub)**: API exists for claim-specific proofs (e.g. "has a Mechanical Engineering degree") but ZK verification is not yet implemented — see warning above
 - **Cross-Border Ready**: Instant verification for international hiring, no embassy letters or notarizations
 - **Privacy-First**: Credential holders control what is revealed and to whom
 - **Trustless**: No central registry — verification is enforced by smart contract logic

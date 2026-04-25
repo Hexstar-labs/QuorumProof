@@ -33,6 +33,12 @@ export function Navbar() {
           >
             Verify
           </Link>
+          <Link
+            to="/slice"
+            className={`nav-link${location.pathname === '/slice' ? ' active' : ''}`}
+          >
+            Slice Builder
+          </Link>
         </div>
 
         <div className="navbar__right">

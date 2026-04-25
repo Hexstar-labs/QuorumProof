@@ -20,7 +20,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Mirrors the on-chain ClaimType enum variants. */
-export type ClaimType = 'HasDegree' | 'HasLicense' | 'HasEmploymentHistory';
+export type ClaimType = 'HasDegree' | 'HasLicense' | 'HasEmploymentHistory' | 'HasCertification' | 'HasResearchPublication';
 
 export interface ProofRequest {
   credential_id: bigint;

@@ -1,0 +1,11 @@
+[package]
+name = "quorum-proof-benches"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+quorum_proof = { path = "../contracts/quorum_proof", features = ["testutils"] }
+sbt_registry = { path = "../contracts/sbt_registry", features = ["testutils"] }
+zk_verifier = { path = "../contracts/zk_verifier", features = ["testutils"] }

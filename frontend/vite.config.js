@@ -1,23 +1,24 @@
-import { defineConfig } from 'vite';
-
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 export default defineConfig({
-  // Allow stellar-sdk browser build
-  optimizeDeps: {
-    include: ['@stellar/stellar-sdk'],
-  },
-  build: {
-    commonjsOptions: {
-      transformMixedEsModules: true,
+    plugins: [react()],
+    optimizeDeps: {
+        include: ["@stellar/stellar-sdk"],
     },
-  },
-  define: {
-    global: 'globalThis',
-  },
-  server: {
-    port: 5173,
-  },
-  test: {
-    environment: 'jsdom',
-    globals: true,
-  },
+    build: {
+        commonjsOptions: {
+            transformMixedEsModules: true,
+        },
+    },
+    define: {
+        global: "globalThis",
+    },
+    server: {
+        port: 5173,
+    },
+    test: {
+        environment: "jsdom",
+        globals: true,
+        setupFiles: [],
+    },
 });
