@@ -7101,4 +7101,164 @@ mod feature_tests {
         assert_eq!(client.get_holder_reputation(&subject_a).credentials_held, 2);
         assert_eq!(client.get_holder_reputation(&subject_b).credentials_held, 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for fixed issues
+    // -----------------------------------------------------------------------
+
+    // Issue #19 — TTL management: storage must survive ledger advancement after revoke.
+    #[test]
+    fn regression_19_ttl_extended_after_revoke() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        client.revoke_credential(&issuer, &id);
+
+        // Advance ledger well past STANDARD_TTL to confirm TTL was extended.
+        env.ledger().set(LedgerInfo {
+            timestamp: 2_000,
+            protocol_version: 20,
+            sequence_number: 20_000,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
+        });
+
+        let cred = client.get_credential(&id);
+        assert!(cred.revoked, "credential must still be readable and revoked after ledger advance");
+    }
+
+    // Issue #21 — Issuer revocation: the issuer (not just the subject) must be able to revoke.
+    #[test]
+    fn regression_21_issuer_can_revoke_credential() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        client.revoke_credential(&issuer, &id);
+
+        assert!(client.get_credential(&id).revoked);
+    }
+
+    // Issue #21 — Double revocation must be rejected.
+    #[test]
+    #[should_panic(expected = "credential already revoked")]
+    fn regression_21_double_revocation_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        client.revoke_credential(&issuer, &id);
+        client.revoke_credential(&issuer, &id); // must panic
+    }
+
+    // Issue #290 — Recovery: initiating recovery stores the request and returns an ID.
+    #[test]
+    fn regression_290_initiate_recovery_stores_request() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let recovery_id = client.initiate_recovery(&issuer, &cred_id, &new_subject, &approvers, &1u32);
+
+        let req = client.get_recovery_request(&recovery_id);
+        assert_eq!(req.credential_id, cred_id);
+        assert_eq!(req.new_subject, new_subject);
+    }
+
+    // Issue #290 — Duplicate recovery for the same credential must be rejected.
+    #[test]
+    #[should_panic]
+    fn regression_290_duplicate_recovery_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        client.initiate_recovery(&issuer, &cred_id, &new_subject, &approvers, &1u32);
+        client.initiate_recovery(&issuer, &cred_id, &new_subject, &approvers, &1u32); // must panic
+    }
+
+    // Issue #294 — Fork detection: conflicting attestation values must be detected.
+    #[test]
+    fn regression_294_detect_fork_with_conflicting_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor1 = Address::generate(&env);
+        let attestor2 = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor1.clone());
+        attestors.push_back(attestor2.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.attest(&attestor1, &cred_id, &slice_id, &true, &None);
+
+        // A conflicting value from attestor2 must be detected as a fork.
+        assert!(client.detect_fork(&cred_id, &slice_id, &attestor2, false));
+    }
+
+    // Issue #294 — Consistent attestation values must NOT trigger fork detection.
+    #[test]
+    fn regression_294_no_fork_for_consistent_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor1 = Address::generate(&env);
+        let attestor2 = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor1.clone());
+        attestors.push_back(attestor2.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.attest(&attestor1, &cred_id, &slice_id, &true, &None);
+
+        assert!(!client.detect_fork(&cred_id, &slice_id, &attestor2, true));
+    }
 }

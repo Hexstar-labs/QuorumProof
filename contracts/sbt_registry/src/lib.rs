@@ -1578,4 +1578,45 @@ mod tests {
         let unauthorized = Address::generate(&env);
         client.finalize_recovery(&unauthorized, &recovery_id); // Should panic
     }
+
+    // -----------------------------------------------------------------------
+    // Regression tests for fixed issues
+    // -----------------------------------------------------------------------
+
+    // Issue #22 — Duplicate SBT mint for the same (owner, credential_id) must be rejected.
+    #[test]
+    #[should_panic(expected = "HostError")]
+    fn regression_22_duplicate_sbt_mint_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        client.mint(&owner, &cred_id, &uri);
+        client.mint(&owner, &cred_id, &uri); // must panic — soulbound, non-transferable
+    }
+
+    // Issue #22 — Minting an SBT for a revoked credential must be rejected.
+    #[test]
+    #[should_panic]
+    fn regression_22_mint_for_revoked_credential_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+
+        qp_client.revoke_credential(&issuer, &cred_id);
+
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        client.mint(&owner, &cred_id, &uri); // must panic — credential is revoked
+    }
 }
