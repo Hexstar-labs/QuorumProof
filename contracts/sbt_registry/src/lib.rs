@@ -260,6 +260,47 @@ impl SbtRegistryContract {
         env.events().publish(topics, token_id);
     }
 
+    /// Recover an SBT to a new owner during credential recovery.
+    /// Callable by the stored quorum_proof contract or the admin.
+    pub fn recover_sbt(env: Env, caller: Address, token_id: u64, new_owner: Address) {
+        caller.require_auth();
+        let qp_id: Address = env.storage().instance().get(&DataKey::QuorumProofId).expect("not initialized");
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        assert!(caller == qp_id || caller == admin, "unauthorized");
+
+        let mut token: SoulboundToken = env.storage().persistent()
+            .get(&DataKey::Token(token_id))
+            .expect("token not found");
+        let old_owner = token.owner.clone();
+
+        // Remove from old owner's list
+        let mut old_tokens: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::OwnerTokens(old_owner.clone()))
+            .unwrap_or(Vec::new(&env));
+        if let Some(pos) = old_tokens.iter().position(|id| id == token_id) {
+            old_tokens.remove(pos as u32);
+        }
+        env.storage().persistent().set(&DataKey::OwnerTokens(old_owner.clone()), &old_tokens);
+        env.storage().instance().remove(&DataKey::Delegation(token_id));
+        env.storage().instance().remove(&DataKey::OwnerCredential(old_owner, token.credential_id));
+
+        // Add to new owner
+        token.owner = new_owner.clone();
+        env.storage().persistent().set(&DataKey::Token(token_id), &token);
+        env.storage().persistent().set(&DataKey::Owner(token_id), &new_owner);
+        let mut new_tokens: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::OwnerTokens(new_owner.clone()))
+            .unwrap_or(Vec::new(&env));
+        new_tokens.push_back(token_id);
+        env.storage().persistent().set(&DataKey::OwnerTokens(new_owner.clone()), &new_tokens);
+        env.storage().instance().set(&DataKey::OwnerCredential(new_owner, token.credential_id), &token_id);
+
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("recover").into_val(&env));
+        topics.push_back(token_id.into_val(&env));
+        env.events().publish(topics, token.credential_id);
+    }
+
     /// Admin-only: transfer an SBT to a new owner (e.g. after credential re-issuance).
     pub fn admin_transfer_sbt(env: Env, admin: Address, token_id: u64, new_owner: Address) {
         admin.require_auth();

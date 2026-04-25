@@ -13,6 +13,9 @@ const TOPIC_RENEWAL: &str = "CredentialRenewed";
 const TOPIC_ATTESTATION_RENEWAL: &str = "AttestationRenewed";
 const TOPIC_SBT_TRANSFER: &str = "SbtTransferred";
 const TOPIC_PROOF_REQUEST: &str = "ProofRequested";
+const TOPIC_RECOVERY_INITIATED: &str = "RecoveryInitiated";
+const TOPIC_RECOVERY_APPROVED: &str = "RecoveryApproved";
+const TOPIC_RECOVERY_EXECUTED: &str = "RecoveryExecuted";
 const STANDARD_TTL: u32 = 16_384;
 const EXTENDED_TTL: u32 = 524_288;
 const MAX_ATTESTORS_PER_SLICE: u32 = 20;
@@ -68,6 +71,67 @@ pub struct AttestationRenewalEventData {
     pub new_expires_at: u64,
 }
 
+/// Event data emitted when a recovery is initiated.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryInitiatedEventData {
+    pub recovery_id: u64,
+    pub credential_id: u64,
+    pub issuer: Address,
+    pub new_subject: Address,
+}
+
+/// Event data emitted when a recovery is approved.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryApprovedEventData {
+    pub recovery_id: u64,
+    pub approver: Address,
+}
+
+/// Event data emitted when a recovery is executed.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryExecutedEventData {
+    pub recovery_id: u64,
+    pub credential_id: u64,
+    pub new_subject: Address,
+}
+
+/// Represents the status of a credential recovery request.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum RecoveryStatus {
+    Pending = 1,
+    Approved = 2,
+    Executed = 3,
+    Rejected = 4,
+}
+
+/// A pending credential recovery request initiated by the issuer.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryRequest {
+    pub id: u64,
+    pub credential_id: u64,
+    pub issuer: Address,
+    pub new_subject: Address,
+    pub status: RecoveryStatus,
+    pub created_at: u64,
+    pub executed_at: Option<u64>,
+    pub approvers: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// Records a single approval on a recovery request.
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryApproval {
+    pub approver: Address,
+    pub approved_at: u64,
+}
+
 /// Time window during which attestations are allowed for a credential.
 #[contracttype]
 #[derive(Clone)]
@@ -102,6 +166,13 @@ pub enum ContractError {
     AccusedCannotVote = 18,
     AlreadyVoted = 19,
     AttestationWindowOutside = 20,
+    RecoveryNotFound = 21,
+    RecoveryAlreadyExists = 22,
+    RecoveryNotPending = 23,
+    RecoveryAlreadyApproved = 24,
+    RecoveryThresholdNotMet = 25,
+    NotRecoveryApprover = 26,
+    DuplicateRecoveryApproval = 27,
 }
 
 #[contracttype]
@@ -152,6 +223,14 @@ pub enum DataKey {
     AttestationExpiry(u64),
     /// Stores the time window configuration for attestations on a credential
     AttestationWindow(u64),
+    /// Stores a recovery request by ID
+    RecoveryRequest(u64),
+    /// Global monotonic counter for recovery request IDs
+    RecoveryRequestCount,
+    /// Maps credential_id to active recovery request ID
+    CredentialRecovery(u64),
+    /// Stores approval records for a recovery request
+    RecoveryApprovals(u64),
 }
 
 #[contracttype]
@@ -246,6 +325,7 @@ pub enum ActivityType {
     CredentialRenewed = 3,
     CredentialAttested = 4,
     AttestationExpired = 5,
+    CredentialRecovered = 6,
 }
 
 /// Records a single activity event for a credential holder
@@ -1424,6 +1504,12 @@ impl QuorumProofContract {
             .unwrap_or(0u64)
     }
 
+    /// Stub for multisig approval check.
+    /// Returns true to preserve backward compatibility until full multisig is implemented.
+    fn is_multisig_approved(_env: &Env, _credential_id: u64) -> bool {
+        true
+    }
+
     /// Check if a credential has met its quorum threshold using weighted trust.
     ///
     /// # FBA Weighted Trust Model
@@ -2542,6 +2628,358 @@ impl QuorumProofContract {
             .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
         
         dispute_id
+    }
+
+    // ── Credential Holder Recovery (Issue #290) ──────────────────────────────
+
+    /// Initiate a credential recovery request.
+    ///
+    /// Only the original issuer may initiate recovery for a credential.
+    /// The recovery requires multi-sig approval from the designated approvers.
+    ///
+    /// # Parameters
+    /// - `issuer`: The address that originally issued the credential; must authorize.
+    /// - `credential_id`: The ID of the credential to recover.
+    /// - `new_subject`: The new address that will receive the recovered credential.
+    /// - `approvers`: List of addresses authorized to approve this recovery.
+    /// - `threshold`: Number of approvers required to execute the recovery.
+    ///
+    /// # Panics
+    /// Panics if the contract is paused.
+    /// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+    /// Panics if the caller is not the original issuer.
+    /// Panics with `ContractError::RecoveryAlreadyExists` if a pending recovery already exists for this credential.
+    pub fn initiate_recovery(
+        env: Env,
+        issuer: Address,
+        credential_id: u64,
+        new_subject: Address,
+        approvers: Vec<Address>,
+        threshold: u32,
+    ) -> u64 {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_valid_address(&env, &new_subject);
+        Self::precondition(&env, credential_id > 0);
+        Self::precondition(&env, threshold > 0);
+        Self::validate_array_bounds(approvers.len(), 1, MAX_MULTISIG_SIGNERS, "approvers");
+
+        let credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+        assert!(credential.issuer == issuer, "only the original issuer can initiate recovery");
+        assert!(!credential.revoked, "cannot recover a revoked credential");
+
+        // No duplicate pending recovery
+        if env.storage().instance().has(&DataKey::CredentialRecovery(credential_id)) {
+            panic_with_error!(&env, ContractError::RecoveryAlreadyExists);
+        }
+
+        let recovery_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecoveryRequestCount)
+            .unwrap_or(0u64)
+            + 1;
+
+        let request = RecoveryRequest {
+            id: recovery_id,
+            credential_id,
+            issuer: issuer.clone(),
+            new_subject: new_subject.clone(),
+            status: RecoveryStatus::Pending,
+            created_at: env.ledger().timestamp(),
+            executed_at: None,
+            approvers,
+            threshold,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryRequest(recovery_id), &request);
+        env.storage()
+            .instance()
+            .set(&DataKey::CredentialRecovery(credential_id), &recovery_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryRequestCount, &recovery_id);
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+
+        // Emit event
+        let event_data = RecoveryInitiatedEventData {
+            recovery_id,
+            credential_id,
+            issuer,
+            new_subject,
+        };
+        let topic = String::from_str(&env, TOPIC_RECOVERY_INITIATED);
+        let mut topics: Vec<String> = Vec::new(&env);
+        topics.push_back(topic);
+        env.events().publish(topics, event_data);
+
+        recovery_id
+    }
+
+    /// Approve a pending credential recovery request.
+    ///
+    /// Only addresses in the recovery approvers list may call this.
+    /// When the total number of approvals meets or exceeds the threshold,
+    /// the recovery status is automatically updated to `Approved`.
+    ///
+    /// # Parameters
+    /// - `approver`: The address approving the recovery; must authorize.
+    /// - `recovery_request_id`: The ID of the recovery request to approve.
+    pub fn approve_recovery(env: Env, approver: Address, recovery_request_id: u64) {
+        approver.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_valid_address(&env, &approver);
+
+        let mut request: RecoveryRequest = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound));
+
+        if request.status != RecoveryStatus::Pending {
+            panic_with_error!(&env, ContractError::RecoveryNotPending);
+        }
+
+        // Verify approver is in the approvers list
+        let mut is_approver = false;
+        for a in request.approvers.iter() {
+            if a == approver {
+                is_approver = true;
+                break;
+            }
+        }
+        if !is_approver {
+            panic_with_error!(&env, ContractError::NotRecoveryApprover);
+        }
+
+        let mut approvals: Vec<RecoveryApproval> = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecoveryApprovals(recovery_request_id))
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicate approval
+        for approval in approvals.iter() {
+            if approval.approver == approver {
+                panic_with_error!(&env, ContractError::DuplicateRecoveryApproval);
+            }
+        }
+
+        approvals.push_back(RecoveryApproval {
+            approver: approver.clone(),
+            approved_at: env.ledger().timestamp(),
+        });
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryApprovals(recovery_request_id), &approvals);
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+
+        // Emit approval event
+        let event_data = RecoveryApprovedEventData {
+            recovery_id: recovery_request_id,
+            approver,
+        };
+        let topic = String::from_str(&env, TOPIC_RECOVERY_APPROVED);
+        let mut topics: Vec<String> = Vec::new(&env);
+        topics.push_back(topic);
+        env.events().publish(topics, event_data);
+
+        // Auto-approve if threshold met
+        if approvals.len() as u32 >= request.threshold {
+            request.status = RecoveryStatus::Approved;
+            env.storage()
+                .instance()
+                .set(&DataKey::RecoveryRequest(recovery_request_id), &request);
+            env.storage()
+                .instance()
+                .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        }
+    }
+
+    /// Execute an approved credential recovery.
+    ///
+    /// Only the original issuer may execute the recovery.
+    /// The recovery must have status `Approved` (threshold met).
+    /// Updates the credential subject, subject credential lists, and optionally
+    /// transfers the linked SBT via cross-contract call.
+    ///
+    /// # Parameters
+    /// - `issuer`: The original issuer; must authorize.
+    /// - `recovery_request_id`: The ID of the approved recovery request.
+    /// - `sbt_registry_id`: Optional address of the SBT registry for SBT transfer.
+    pub fn execute_recovery(
+        env: Env,
+        issuer: Address,
+        recovery_request_id: u64,
+        sbt_registry_id: Option<Address>,
+    ) {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+
+        let mut request: RecoveryRequest = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound));
+
+        assert!(request.issuer == issuer, "only the original issuer can execute recovery");
+
+        if request.status != RecoveryStatus::Approved {
+            panic_with_error!(&env, ContractError::RecoveryThresholdNotMet);
+        }
+
+        let credential_id = request.credential_id;
+        let old_subject = request.new_subject.clone(); // placeholder - will read from credential
+
+        let mut credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+
+        let prev_subject = credential.subject.clone();
+        let new_subject = request.new_subject.clone();
+
+        // Remove credential from old subject's list
+        let mut old_creds: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SubjectCredentials(prev_subject.clone()))
+            .unwrap_or(Vec::new(&env));
+        let mut retained: Vec<u64> = Vec::new(&env);
+        for id in old_creds.iter() {
+            if id != credential_id {
+                retained.push_back(id);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::SubjectCredentials(prev_subject.clone()), &retained);
+
+        // Add to new subject's list
+        let mut new_creds: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SubjectCredentials(new_subject.clone()))
+            .unwrap_or(Vec::new(&env));
+        new_creds.push_back(credential_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::SubjectCredentials(new_subject.clone()), &new_creds);
+
+        // Update duplicate prevention mapping
+        let old_dup_key = DataKey::SubjectIssuerType(prev_subject.clone(), credential.issuer.clone(), credential.credential_type);
+        env.storage().instance().remove(&old_dup_key);
+        let new_dup_key = DataKey::SubjectIssuerType(new_subject.clone(), credential.issuer.clone(), credential.credential_type);
+        env.storage().instance().set(&new_dup_key, &credential_id);
+
+        // Update credential subject
+        credential.subject = new_subject.clone();
+        env.storage()
+            .instance()
+            .set(&DataKey::Credential(credential_id), &credential);
+
+        // Update recovery request status
+        request.status = RecoveryStatus::Executed;
+        request.executed_at = Some(env.ledger().timestamp());
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryRequest(recovery_request_id), &request);
+        env.storage()
+            .instance()
+            .remove(&DataKey::CredentialRecovery(credential_id));
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+
+        // Transfer SBT if registry provided
+        if let Some(registry_id) = sbt_registry_id {
+            let sbt_client = SbtRegistryContractClient::new(&env, &registry_id);
+            let tokens = sbt_client.get_tokens_by_owner(&prev_subject);
+            for token_id in tokens.iter() {
+                let token = sbt_client.get_token(&token_id);
+                if token.credential_id == credential_id {
+                    sbt_client.recover_sbt(&env.current_contract_address(), &token_id, &new_subject);
+                }
+            }
+        }
+
+        // Emit event
+        let event_data = RecoveryExecutedEventData {
+            recovery_id: recovery_request_id,
+            credential_id,
+            new_subject: new_subject.clone(),
+        };
+        let topic = String::from_str(&env, TOPIC_RECOVERY_EXECUTED);
+        let mut topics: Vec<String> = Vec::new(&env);
+        topics.push_back(topic);
+        env.events().publish(topics, event_data);
+
+        // Record activity for audit trail
+        Self::record_holder_activity(
+            &env,
+            new_subject,
+            ActivityType::CredentialRecovered,
+            credential_id,
+            issuer,
+            None,
+        );
+    }
+
+    /// Retrieve a recovery request by ID.
+    pub fn get_recovery_request(env: Env, recovery_request_id: u64) -> RecoveryRequest {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound))
+    }
+
+    /// Retrieve all approvals for a recovery request.
+    pub fn get_recovery_approvals(env: Env, recovery_request_id: u64) -> Vec<RecoveryApproval> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryApprovals(recovery_request_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Cancel a pending recovery request. Only the issuer may cancel.
+    pub fn cancel_recovery(env: Env, issuer: Address, recovery_request_id: u64) {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+
+        let request: RecoveryRequest = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound));
+
+        assert!(request.issuer == issuer, "only the issuer can cancel recovery");
+
+        if request.status != RecoveryStatus::Pending && request.status != RecoveryStatus::Approved {
+            panic_with_error!(&env, ContractError::RecoveryNotPending);
+        }
+
+        let mut updated = request;
+        updated.status = RecoveryStatus::Rejected;
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryRequest(recovery_request_id), &updated);
+        env.storage()
+            .instance()
+            .remove(&DataKey::CredentialRecovery(updated.credential_id));
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
     }
 }
 
@@ -5095,5 +5533,353 @@ mod feature_tests {
         let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
 
         assert!(client.get_attestation_window(&cid).is_none());
+    }
+
+    // ── Credential Holder Recovery (Issue #290) ─────────────────────────────
+
+    #[test]
+    fn test_initiate_recovery_by_issuer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+
+        let req = client.get_recovery_request(&rid);
+        assert_eq!(req.credential_id, cid);
+        assert_eq!(req.issuer, issuer);
+        assert_eq!(req.new_subject, new_subject);
+        assert_eq!(req.status, RecoveryStatus::Pending);
+        assert_eq!(req.threshold, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the original issuer can initiate recovery")]
+    fn test_initiate_recovery_unauthorized_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        client.initiate_recovery(&attacker, &cid, &new_subject, &approvers, &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #22)")]
+    fn test_initiate_recovery_duplicate_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        // Second initiation for same credential should panic
+        client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+    }
+
+    #[test]
+    fn test_approve_recovery_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+
+        client.approve_recovery(&approver, &rid);
+        let req = client.get_recovery_request(&rid);
+        assert_eq!(req.status, RecoveryStatus::Approved);
+
+        let approvals = client.get_recovery_approvals(&rid);
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals.get(0).unwrap().approver, approver);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #26)")]
+    fn test_approve_recovery_not_approver_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+
+        client.approve_recovery(&stranger, &rid);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #27)")]
+    fn test_approve_recovery_double_vote_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &2u32);
+
+        client.approve_recovery(&approver, &rid);
+        client.approve_recovery(&approver, &rid); // duplicate
+    }
+
+    #[test]
+    fn test_recovery_auto_approves_on_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver1 = Address::generate(&env);
+        let approver2 = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver1.clone());
+        approvers.push_back(approver2.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &2u32);
+
+        client.approve_recovery(&approver1, &rid);
+        let req1 = client.get_recovery_request(&rid);
+        assert_eq!(req1.status, RecoveryStatus::Pending);
+
+        client.approve_recovery(&approver2, &rid);
+        let req2 = client.get_recovery_request(&rid);
+        assert_eq!(req2.status, RecoveryStatus::Approved);
+    }
+
+    #[test]
+    fn test_execute_recovery_updates_subject() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.approve_recovery(&approver, &rid);
+
+        client.execute_recovery(&issuer, &rid, &None);
+
+        let cred = client.get_credential(&cid);
+        assert_eq!(cred.subject, new_subject);
+
+        let old_list = client.get_credentials_by_subject(&subject, &1u32, &50u32);
+        let new_list = client.get_credentials_by_subject(&new_subject, &1u32, &50u32);
+        assert!(!old_list.contains(&cid));
+        assert!(new_list.contains(&cid));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #25)")]
+    fn test_execute_recovery_threshold_not_met_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver1 = Address::generate(&env);
+        let approver2 = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver1.clone());
+        approvers.push_back(approver2.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &2u32);
+        client.approve_recovery(&approver1, &rid);
+
+        // Only 1 of 2 approvals — threshold not met
+        client.execute_recovery(&issuer, &rid, &None);
+    }
+
+    #[test]
+    fn test_recovery_transfers_sbt() {
+        use sbt_registry::{SbtRegistryContract, SbtRegistryContractClient};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let qp_id = env.register_contract(None, QuorumProofContract);
+        let sbt_id = env.register_contract(None, SbtRegistryContract);
+        let client = QuorumProofContractClient::new(&env, &qp_id);
+        let sbt = SbtRegistryContractClient::new(&env, &sbt_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        sbt.initialize(&admin, &qp_id);
+
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let sbt_uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let token_id = sbt.mint(&subject, &cid, &sbt_uri);
+        assert_eq!(sbt.owner_of(&token_id), subject);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.approve_recovery(&approver, &rid);
+        client.execute_recovery(&issuer, &rid, &Some(sbt_id));
+
+        assert_eq!(sbt.owner_of(&token_id), new_subject);
+        assert!(sbt.get_tokens_by_owner(&subject).is_empty());
+        assert_eq!(sbt.get_tokens_by_owner(&new_subject).get(0).unwrap(), token_id);
+    }
+
+    #[test]
+    fn test_recovery_emits_events() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.approve_recovery(&approver, &rid);
+        client.execute_recovery(&issuer, &rid, &None);
+
+        let events = env.events().all();
+        let initiated = events.iter().find(|(_, topics, _)| {
+            topics.get(0).map(|t| String::from_val(&env, &t) == String::from_str(&env, TOPIC_RECOVERY_INITIATED)).unwrap_or(false)
+        });
+        let approved = events.iter().find(|(_, topics, _)| {
+            topics.get(0).map(|t| String::from_val(&env, &t) == String::from_str(&env, TOPIC_RECOVERY_APPROVED)).unwrap_or(false)
+        });
+        let executed = events.iter().find(|(_, topics, _)| {
+            topics.get(0).map(|t| String::from_val(&env, &t) == String::from_str(&env, TOPIC_RECOVERY_EXECUTED)).unwrap_or(false)
+        });
+
+        assert!(initiated.is_some(), "RecoveryInitiated event not emitted");
+        assert!(approved.is_some(), "RecoveryApproved event not emitted");
+        assert!(executed.is_some(), "RecoveryExecuted event not emitted");
+    }
+
+    #[test]
+    fn test_recovery_records_activity() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.approve_recovery(&approver, &rid);
+        client.execute_recovery(&issuer, &rid, &None);
+
+        let activities = client.get_holder_activity(&new_subject, &1u32, &10u32);
+        assert_eq!(activities.len(), 1);
+        let activity = activities.get(0).unwrap();
+        assert_eq!(activity.activity_type, ActivityType::CredentialRecovered);
+        assert_eq!(activity.credential_id, cid);
+        assert_eq!(activity.actor, issuer);
+    }
+
+    #[test]
+    fn test_cancel_recovery() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.cancel_recovery(&issuer, &rid);
+
+        let req = client.get_recovery_request(&rid);
+        assert_eq!(req.status, RecoveryStatus::Rejected);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the issuer can cancel recovery")]
+    fn test_cancel_recovery_unauthorized_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let new_subject = Address::generate(&env);
+        let approver = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut approvers = Vec::new(&env);
+        approvers.push_back(approver.clone());
+        let rid = client.initiate_recovery(&issuer, &cid, &new_subject, &approvers, &1u32);
+        client.cancel_recovery(&attacker, &rid);
     }
 }
