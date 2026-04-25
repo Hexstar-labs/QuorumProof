@@ -68,6 +68,16 @@ pub struct AttestationRenewalEventData {
     pub new_expires_at: u64,
 }
 
+/// Time window during which attestations are allowed for a credential.
+#[contracttype]
+#[derive(Clone)]
+pub struct AttestationTimeWindow {
+    /// Unix timestamp when the attestation window opens.
+    pub start: u64,
+    /// Unix timestamp when the attestation window closes.
+    pub end: u64,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -91,6 +101,7 @@ pub enum ContractError {
     NotInSlice = 17,
     AccusedCannotVote = 18,
     AlreadyVoted = 19,
+    AttestationWindowOutside = 20,
 }
 
 #[contracttype]
@@ -139,6 +150,8 @@ pub enum DataKey {
     ActiveChallenge(u64, Address),
     /// Stores expiry timestamp for specific attestations
     AttestationExpiry(u64),
+    /// Stores the time window configuration for attestations on a credential
+    AttestationWindow(u64),
 }
 
 #[contracttype]
@@ -514,6 +527,39 @@ impl QuorumProofContract {
             Some(expires_at) => env.ledger().timestamp() >= expires_at,
             None => false,
         }
+    }
+
+    /// Configure a time window during which attestations are allowed for a credential.
+    /// Only the credential issuer may set this.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+    /// Panics if the caller is not the issuer.
+    /// Panics with `ContractError::InvalidInput` if `start >= end`.
+    pub fn set_attestation_window(env: Env, issuer: Address, credential_id: u64, start: u64, end: u64) {
+        issuer.require_auth();
+        Self::require_not_paused(&env);
+        let credential: Credential = env
+            .storage()
+            .instance()
+            .get(&DataKey::Credential(credential_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+        assert!(credential.issuer == issuer, "only the credential issuer can set attestation window");
+        Self::precondition(&env, start < end);
+        let window = AttestationTimeWindow { start, end };
+        env.storage()
+            .instance()
+            .set(&DataKey::AttestationWindow(credential_id), &window);
+        env.storage()
+            .instance()
+            .extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Returns the attestation time window for a credential, if one has been configured.
+    pub fn get_attestation_window(env: Env, credential_id: u64) -> Option<AttestationTimeWindow> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttestationWindow(credential_id))
     }
 
     /// Validate an array input has between `min` and `max` elements (inclusive).
@@ -1230,6 +1276,13 @@ impl QuorumProofContract {
             .get(&DataKey::Credential(credential_id))
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
         assert!(!credential.revoked, "credential is revoked");
+        // Enforce attestation time window if configured
+        if let Some(window) = env.storage().instance().get::<DataKey, AttestationTimeWindow>(&DataKey::AttestationWindow(credential_id)) {
+            let now = env.ledger().timestamp();
+            if now < window.start || now >= window.end {
+                panic_with_error!(&env, ContractError::AttestationWindowOutside);
+            }
+        }
         let slice: QuorumSlice = env
             .storage()
             .instance()
@@ -1319,6 +1372,13 @@ impl QuorumProofContract {
                 .get(&DataKey::Credential(credential_id))
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
             assert!(!credential.revoked, "credential is revoked");
+            // Enforce attestation time window if configured
+            if let Some(window) = env.storage().instance().get::<DataKey, AttestationTimeWindow>(&DataKey::AttestationWindow(credential_id)) {
+                let now = env.ledger().timestamp();
+                if now < window.start || now >= window.end {
+                    panic_with_error!(&env, ContractError::AttestationWindowOutside);
+                }
+            }
             let mut records: Vec<AttestationRecord> = env.storage().instance()
                 .get(&DataKey::Attestors(credential_id))
                 .unwrap_or(Vec::new(&env));
@@ -4882,5 +4942,158 @@ mod feature_tests {
         client.revoke_credential(&issuer, &cid);
         // Attest after revocation — must panic
         client.attest(&attestor, &cid, &slice_id, &None);
+    }
+
+    // --- Issue #339: Time-window attestation tests ---
+
+    #[test]
+    fn test_set_and_get_attestation_window() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        client.set_attestation_window(&issuer, &cid, &1000u64, &2000u64);
+
+        let window = client.get_attestation_window(&cid).unwrap();
+        assert_eq!(window.start, 1000);
+        assert_eq!(window.end, 2000);
+    }
+
+    #[test]
+    fn test_attest_within_window_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.set_attestation_window(&issuer, &cid, &500u64, &2000u64);
+        set_ledger_timestamp(&env, 1000);
+
+        // Should succeed — timestamp 1000 is within [500, 2000)
+        client.attest(&attestor, &cid, &slice_id, &None);
+        assert!(client.is_attested(&cid, &slice_id));
+    }
+
+    #[test]
+    fn test_attest_before_window_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.set_attestation_window(&issuer, &cid, &1000u64, &2000u64);
+        set_ledger_timestamp(&env, 500); // before window
+
+        let result = client.try_attest(&attestor, &cid, &slice_id, &None);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::AttestationWindowOutside as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_attest_after_window_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.set_attestation_window(&issuer, &cid, &500u64, &1000u64);
+        set_ledger_timestamp(&env, 1500); // after window
+
+        let result = client.try_attest(&attestor, &cid, &slice_id, &None);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                ContractError::AttestationWindowOutside as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_attest_no_window_always_allowed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        // No window set — attest at any time should succeed
+        set_ledger_timestamp(&env, 99999);
+        client.attest(&attestor, &cid, &slice_id, &None);
+        assert!(client.is_attested(&cid, &slice_id));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_attestation_window_invalid_range_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        // start >= end must be rejected
+        client.set_attestation_window(&issuer, &cid, &2000u64, &1000u64);
+    }
+
+    #[test]
+    fn test_get_attestation_window_none_when_not_set() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let meta = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+        let cid = client.issue_credential(&issuer, &subject, &1u32, &meta, &None);
+
+        assert!(client.get_attestation_window(&cid).is_none());
     }
 }
