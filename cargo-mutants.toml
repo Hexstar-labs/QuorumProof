@@ -1,0 +1,27 @@
+# cargo-mutants configuration for QuorumProof
+# https://mutants.rs/configuration.html
+
+# Only mutate the three contract crates; exclude fuzz and benches.
+packages = [
+    "quorum_proof",
+    "sbt_registry",
+    "zk_verifier",
+]
+
+# Exclude generated test helpers and snapshot files.
+exclude_globs = [
+    "*/test_snapshots/**",
+    "*.bak",
+]
+
+# Minimum mutation score threshold (percentage of mutants caught by tests).
+# Fail the run if the score drops below this value.
+minimum_test_count = 1
+
+# Timeout per mutant test run (seconds). Soroban tests are fast in-process.
+timeout_multiplier = 2.0
+
+# Show which mutants were missed so developers can improve tests.
+# Options: "all", "missed", "caught", "unviable", "timeout"
+print_caught = false
+print_unviable = false
