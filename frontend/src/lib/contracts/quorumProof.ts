@@ -190,3 +190,8 @@ export async function getCredentialsBySubject(subject: string): Promise<bigint[]
 export async function isExpired(credentialId: bigint | number): Promise<boolean> {
   return simulate<boolean>('is_expired', [u64(credentialId)]);
 }
+
+/** Retrieve a quorum slice by ID. Returns { id, creator, attestors, threshold }. */
+export async function getSlice(sliceId: bigint | number): Promise<QuorumSlice> {
+  return simulate<QuorumSlice>('get_slice', [u64(sliceId)]);
+}

@@ -2,10 +2,42 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-Currently, two official plugins are available:
+## Environment Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+This application requires several environment variables to be configured for proper operation. Copy `.env.example` to `.env` and fill in the required values.
+
+### Required Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `VITE_STELLAR_NETWORK` | Stellar network to connect to | `testnet` |
+| `VITE_STELLAR_RPC_URL` | Soroban RPC endpoint URL | `https://soroban-testnet.stellar.org` |
+| `VITE_CONTRACT_QUORUM_PROOF` | QuorumProof contract ID | `C...` |
+| `VITE_CONTRACT_SBT_REGISTRY` | SBT Registry contract ID | `C...` |
+| `VITE_CONTRACT_ZK_VERIFIER` | ZK Verifier contract ID | `C...` |
+
+**Note:** All contract IDs should be the full Stellar contract addresses (starting with 'C').
+
+The application will fail to start with a descriptive error message if any required environment variables are missing.
+
+## Getting Started
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Copy environment file:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Configure your environment variables in `.env`
+
+4. Start the development server:
+   ```bash
+   npm run dev
+   ```
 
 ## React Compiler
 
