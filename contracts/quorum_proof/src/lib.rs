@@ -2381,6 +2381,66 @@ impl QuorumProofContract {
         status
     }
 
+    /// Verify multiple (credential_id, slice_id) pairs in a single call.
+    ///
+    /// Gas-optimized: each credential and slice is read from storage at most once,
+    /// regardless of how many times it appears in the input list.
+    ///
+    /// Returns a `Vec<bool>` of the same length as the input, where each element
+    /// corresponds to `is_attested(credential_ids[i], slice_ids[i])`.
+    ///
+    /// # Panics
+    /// Panics if `credential_ids` and `slice_ids` have different lengths, or if
+    /// either list is empty or exceeds `MAX_BATCH_SIZE`.
+    pub fn verify_attestations_batch(
+        env: Env,
+        credential_ids: Vec<u64>,
+        slice_ids: Vec<u64>,
+    ) -> Vec<bool> {
+        Self::validate_array_bounds(credential_ids.len(), 1, MAX_BATCH_SIZE, "credential_ids");
+        assert!(
+            credential_ids.len() == slice_ids.len(),
+            "credential_ids and slice_ids lengths must match"
+        );
+        let now = env.ledger().timestamp();
+        let mut results: Vec<bool> = Vec::new(&env);
+        for i in 0..credential_ids.len() {
+            let credential_id = credential_ids.get(i).unwrap();
+            let slice_id = slice_ids.get(i).unwrap();
+            let attested = match env.storage().instance().get::<DataKey, Credential>(&DataKey::Credential(credential_id)) {
+                None => false,
+                Some(cred) => {
+                    if cred.revoked { false }
+                    else if cred.expires_at.map_or(false, |e| now >= e) { false }
+                    else if env.storage().instance().get::<DataKey, u64>(&DataKey::AttestationExpiry(credential_id)).map_or(false, |e| now >= e) { false }
+                    else {
+                        match env.storage().instance().get::<DataKey, QuorumSlice>(&DataKey::Slice(slice_id)) {
+                            None => false,
+                            Some(slice) => {
+                                let records: Vec<AttestationRecord> = env.storage().instance()
+                                    .get(&DataKey::Attestors(credential_id))
+                                    .unwrap_or(Vec::new(&env));
+                                let mut weight: u32 = 0;
+                                for rec in records.iter() {
+                                    if rec.expires_at.map_or(false, |e| now >= e) { continue; }
+                                    for (j, a) in slice.attestors.iter().enumerate() {
+                                        if a == rec.attestor {
+                                            weight = weight.saturating_add(slice.weights.get(j as u32).unwrap_or(0));
+                                            break;
+                                        }
+                                    }
+                                }
+                                weight >= slice.threshold
+                            }
+                        }
+                    }
+                }
+            };
+            results.push_back(attested);
+        }
+        results
+    }
+
     /// Unified engineer verification entry point.
     ///
     /// Checks that the subject holds an SBT linked to the credential, then delegates
@@ -4431,6 +4491,105 @@ mod tests {
         client.attest(&attestor2, &cred_id, &slice_id, &None);
 
         assert!(!client.is_attested(&cred_id, &slice_id));
+    }
+
+    // --- verify_attestations_batch tests ---
+
+    #[test]
+    fn test_verify_attestations_batch_all_attested() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+
+        let cred1 = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let cred2 = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        client.attest(&attestor, &cred1, &slice_id, &true, &None);
+        client.attest(&attestor, &cred2, &slice_id, &true, &None);
+
+        let mut cred_ids = Vec::new(&env);
+        cred_ids.push_back(cred1);
+        cred_ids.push_back(cred2);
+        let mut slice_ids = Vec::new(&env);
+        slice_ids.push_back(slice_id);
+        slice_ids.push_back(slice_id);
+
+        let results = client.verify_attestations_batch(&cred_ids, &slice_ids);
+        assert_eq!(results.len(), 2);
+        assert!(results.get(0).unwrap());
+        assert!(results.get(1).unwrap());
+    }
+
+    #[test]
+    fn test_verify_attestations_batch_mixed_results() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+
+        let cred1 = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let cred2 = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+
+        // Only attest cred1
+        client.attest(&attestor, &cred1, &slice_id, &true, &None);
+
+        let mut cred_ids = Vec::new(&env);
+        cred_ids.push_back(cred1);
+        cred_ids.push_back(cred2);
+        let mut slice_ids = Vec::new(&env);
+        slice_ids.push_back(slice_id);
+        slice_ids.push_back(slice_id);
+
+        let results = client.verify_attestations_batch(&cred_ids, &slice_ids);
+        assert!(results.get(0).unwrap());
+        assert!(!results.get(1).unwrap());
+    }
+
+    #[test]
+    fn test_verify_attestations_batch_revoked_returns_false() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _) = setup(&env);
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let attestor = Address::generate(&env);
+        let metadata = Bytes::from_slice(&env, b"QmTestHash000000000000000000000000");
+
+        let cred_id = client.issue_credential(&issuer, &subject, &1u32, &metadata, &None);
+        let mut attestors = Vec::new(&env);
+        attestors.push_back(attestor.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(1u32);
+        let slice_id = client.create_slice(&issuer, &attestors, &weights, &1u32);
+        client.attest(&attestor, &cred_id, &slice_id, &true, &None);
+        client.revoke_credential(&issuer, &cred_id);
+
+        let mut cred_ids = Vec::new(&env);
+        cred_ids.push_back(cred_id);
+        let mut slice_ids = Vec::new(&env);
+        slice_ids.push_back(slice_id);
+
+        let results = client.verify_attestations_batch(&cred_ids, &slice_ids);
+        assert!(!results.get(0).unwrap());
     }
 
     // --- batch issue ---
