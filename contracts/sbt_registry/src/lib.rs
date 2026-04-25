@@ -12,6 +12,11 @@ const EXTENDED_TTL: u32 = 524_288;
 pub enum ContractError {
     SoulboundNonTransferable = 1,
     TokenNotFound = 2,
+    RecoveryNotFound = 3,
+    RecoveryAlreadyExists = 4,
+    UnauthorizedRecovery = 5,
+    InsufficientApprovals = 6,
+    InvalidGuardian = 7,
 }
 
 #[contracttype]
@@ -25,6 +30,14 @@ pub enum DataKey {
     Delegation(u64),
     Admin,
     QuorumProofId,
+    RecoveryRequest(u64),
+    RecoveryRequestCount,
+    PendingRecoveryByHolder(Address),
+    RecoveryApprovals(u64),
+    RecoveryGuardians,
+    RecoveryThreshold,
+    AuditTrail(u64),
+    AuditTrailCount,
 }
 
 #[contracttype]
@@ -42,6 +55,52 @@ pub struct Delegation {
     pub token_id: u64,
     pub delegatee: Address,
     pub expires_at: u64,
+}
+
+/// Represents a recovery request for an SBT holder's lost/compromised account
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryRequest {
+    /// Unique recovery request ID
+    pub id: u64,
+    /// Original account owner who initiated recovery
+    pub initiator: Address,
+    /// New account to recover SBTs to
+    pub new_owner: Address,
+    /// Time when recovery was initiated
+    pub initiated_at: u64,
+    /// Whether the recovery has been finalized
+    pub completed: bool,
+    /// Number of approvals received so far
+    pub approvals_count: u32,
+}
+
+/// Represents a single approval by a recovery guardian
+#[contracttype]
+#[derive(Clone)]
+pub struct RecoveryApproval {
+    /// The guardian who approved
+    pub guardian: Address,
+    /// Time when approval was given
+    pub approved_at: u64,
+}
+
+/// Audit trail entry for recovery operations
+#[contracttype]
+#[derive(Clone)]
+pub struct AuditTrailEntry {
+    /// Unique audit trail ID
+    pub id: u64,
+    /// Recovery request ID (if applicable)
+    pub recovery_request_id: u64,
+    /// Type of action: "initiate", "approve", "finalize"
+    pub action: Symbol,
+    /// Actor performing the action
+    pub actor: Address,
+    /// Timestamp of the action
+    pub timestamp: u64,
+    /// Additional details about the action
+    pub details: soroban_sdk::String,
 }
 
 #[contract]
@@ -159,7 +218,7 @@ impl SbtRegistryContract {
         expires_at: u64,
     ) {
         owner.require_auth();
-        let mut token: SoulboundToken = env.storage().persistent()
+        let token: SoulboundToken = env.storage().persistent()
             .get(&DataKey::Token(token_id))
             .expect("token not found");
         assert!(token.owner == owner, "not the owner");
@@ -298,6 +357,332 @@ impl SbtRegistryContract {
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    // ── SBT Holder Recovery ──────────────────────────────────────
+
+    /// Configure the recovery guardians and approval threshold for the contract.
+    /// Only the admin may call this. Sets up the multi-sig recovery mechanism.
+    ///
+    /// # Parameters
+    /// - `admin`: The admin address; must authorize this call.
+    /// - `guardians`: List of addresses authorized to approve recovery requests.
+    /// - `threshold`: Number of guardian approvals required to finalize recovery.
+    ///
+    /// # Panics
+    /// Panics if caller is not the admin.
+    /// Panics if guardians list is empty or exceeds maximum allowed.
+    /// Panics if threshold is 0 or exceeds the number of guardians.
+    pub fn setup_recovery_guardians(env: Env, admin: Address, guardians: Vec<Address>, threshold: u32) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+        
+        assert!(!guardians.is_empty(), "guardians list cannot be empty");
+        assert!(guardians.len() <= 10, "too many guardians (max 10)");
+        assert!(threshold > 0, "threshold must be greater than 0");
+        assert!(threshold <= guardians.len() as u32, "threshold cannot exceed number of guardians");
+        
+        env.storage().instance().set(&DataKey::RecoveryGuardians, &guardians);
+        env.storage().instance().set(&DataKey::RecoveryThreshold, &threshold);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Get the current recovery guardians configured for this contract.
+    pub fn get_recovery_guardians(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryGuardians)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Get the current recovery approval threshold.
+    pub fn get_recovery_threshold(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryThreshold)
+            .unwrap_or(0u32)
+    }
+
+    /// Initiate a recovery request for a lost or compromised account.
+    ///
+    /// The holder calls this to request recovery of their SBTs to a new address.
+    /// Once the recovery is approved by the threshold number of guardians, 
+    /// the holder can finalize the recovery to transfer their SBTs.
+    ///
+    /// # Parameters
+    /// - `initiator`: The current account holder; must authorize this call.
+    /// - `new_owner`: The new account to recover SBTs to.
+    ///
+    /// # Panics
+    /// Panics if no recovery guardians have been configured.
+    /// Panics if a recovery request already exists for this holder.
+    /// Panics if initiator is the same as new_owner.
+    pub fn initiate_recovery(env: Env, initiator: Address, new_owner: Address) -> u64 {
+        initiator.require_auth();
+        
+        let guardians: Vec<Address> = env.storage()
+            .instance()
+            .get(&DataKey::RecoveryGuardians)
+            .unwrap_or(Vec::new(&env));
+        assert!(!guardians.is_empty(), "recovery guardians not configured");
+        assert!(initiator != new_owner, "new owner must be different from initiator");
+        
+        // Check if there's already a pending recovery for this holder
+        if env.storage().instance().has(&DataKey::PendingRecoveryByHolder(initiator.clone())) {
+            panic_with_error!(&env, ContractError::RecoveryAlreadyExists);
+        }
+        
+        // Create recovery request
+        let request_id: u64 = env.storage().instance().get(&DataKey::RecoveryRequestCount).unwrap_or(0u64) + 1;
+        let request = RecoveryRequest {
+            id: request_id,
+            initiator: initiator.clone(),
+            new_owner: new_owner.clone(),
+            initiated_at: env.ledger().timestamp(),
+            completed: false,
+            approvals_count: 0,
+        };
+        
+        env.storage().instance().set(&DataKey::RecoveryRequest(request_id), &request);
+        env.storage().instance().set(&DataKey::RecoveryRequestCount, &request_id);
+        env.storage().instance().set(&DataKey::PendingRecoveryByHolder(initiator.clone()), &request_id);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        
+        // Initialize empty approvals vector
+        let approvals: Vec<RecoveryApproval> = Vec::new(&env);
+        env.storage().instance().set(&DataKey::RecoveryApprovals(request_id), &approvals);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        
+        // Record audit trail
+        Self::record_audit_trail(&env, request_id, symbol_short!("init"), initiator.clone(), 
+            soroban_sdk::String::from_str(&env, "Recovery initiated"));
+        
+        // Emit event
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("recov_in").into_val(&env));
+        topics.push_back(request_id.into_val(&env));
+        env.events().publish(topics, initiator);
+        
+        request_id
+    }
+
+    /// Approve a pending recovery request as a guardian.
+    ///
+    /// A configured recovery guardian calls this to approve a recovery request.
+    /// Once the threshold number of approvals is reached, the initiator can 
+    /// finalize the recovery.
+    ///
+    /// # Parameters
+    /// - `guardian`: The guardian address approving; must authorize this call and be in guardians list.
+    /// - `recovery_request_id`: The ID of the recovery request to approve.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::RecoveryNotFound` if the recovery request doesn't exist.
+    /// Panics if the guardian is not in the configured guardians list.
+    /// Panics if the guardian has already approved this request.
+    /// Panics if the recovery has already been completed.
+    pub fn approve_recovery(env: Env, guardian: Address, recovery_request_id: u64) {
+        guardian.require_auth();
+        
+        let guardians: Vec<Address> = env.storage()
+            .instance()
+            .get(&DataKey::RecoveryGuardians)
+            .unwrap_or(Vec::new(&env));
+        
+        let mut is_guardian = false;
+        for g in guardians.iter() {
+            if g == guardian {
+                is_guardian = true;
+                break;
+            }
+        }
+        assert!(is_guardian, "only configured guardians can approve recoveries");
+        
+        // Get recovery request
+        let mut recovery: RecoveryRequest = env.storage().instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound));
+        
+        assert!(!recovery.completed, "recovery already completed");
+        
+        // Get existing approvals
+        let mut approvals: Vec<RecoveryApproval> = env.storage().instance()
+            .get(&DataKey::RecoveryApprovals(recovery_request_id))
+            .unwrap_or(Vec::new(&env));
+        
+        // Check if guardian has already approved
+        for approval in approvals.iter() {
+            assert!(approval.guardian != guardian, "guardian has already approved this recovery");
+        }
+        
+        // Add approval
+        let new_approval = RecoveryApproval {
+            guardian: guardian.clone(),
+            approved_at: env.ledger().timestamp(),
+        };
+        approvals.push_back(new_approval);
+        
+        // Update recovery request with new approval count
+        recovery.approvals_count += 1;
+        
+        env.storage().instance().set(&DataKey::RecoveryApprovals(recovery_request_id), &approvals);
+        env.storage().instance().set(&DataKey::RecoveryRequest(recovery_request_id), &recovery);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+        
+        // Record audit trail
+        Self::record_audit_trail(&env, recovery_request_id, symbol_short!("approv"), guardian.clone(),
+            soroban_sdk::String::from_str(&env, "Recovery approved by guardian"));
+        
+        // Emit event
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("recov_ap").into_val(&env));
+        topics.push_back(recovery_request_id.into_val(&env));
+        env.events().publish(topics, guardian);
+    }
+
+    /// Finalize a recovery request by transferring SBTs to the new owner.
+    ///
+    /// The initiator calls this after collecting enough guardian approvals.
+    /// This transfers all SBTs from the original account to the new owner.
+    ///
+    /// # Parameters
+    /// - `initiator`: The recovery initiator; must authorize this call.
+    /// - `recovery_request_id`: The ID of the recovery request to finalize.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::RecoveryNotFound` if the recovery request doesn't exist.
+    /// Panics with `ContractError::InsufficientApprovals` if threshold not reached.
+    /// Panics if recovery already completed.
+    pub fn finalize_recovery(env: Env, initiator: Address, recovery_request_id: u64) {
+        initiator.require_auth();
+        
+        let mut recovery: RecoveryRequest = env.storage().instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound));
+        
+        assert!(recovery.initiator == initiator, "only recovery initiator can finalize");
+        assert!(!recovery.completed, "recovery already completed");
+        
+        let threshold: u32 = env.storage().instance().get(&DataKey::RecoveryThreshold).unwrap_or(0u32);
+        assert!(recovery.approvals_count >= threshold, 
+            "insufficient approvals: need {} but have {}", threshold, recovery.approvals_count);
+        
+        // Transfer all SBTs from initiator to new_owner
+        let token_ids: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::OwnerTokens(initiator.clone()))
+            .unwrap_or(Vec::new(&env));
+        
+        let new_owner = recovery.new_owner.clone();
+        
+        // Update each token and transfer ownership
+        for token_id in token_ids.iter() {
+            let mut token: SoulboundToken = env.storage().persistent()
+                .get(&DataKey::Token(token_id))
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::TokenNotFound));
+            
+            // Update token owner
+            token.owner = new_owner.clone();
+            env.storage().persistent().set(&DataKey::Token(token_id), &token);
+            env.storage().persistent().set(&DataKey::Owner(token_id), &new_owner);
+            
+            // Remove from old owner's mapping
+            env.storage().instance().remove(&DataKey::OwnerCredential(initiator.clone(), token.credential_id));
+            
+            // Add to new owner's mapping
+            env.storage().instance().set(&DataKey::OwnerCredential(new_owner.clone(), token.credential_id), &token_id);
+        }
+        
+        // Clear initiator's token list
+        env.storage().persistent().remove(&DataKey::OwnerTokens(initiator.clone()));
+        
+        // Add to new owner's token list
+        let mut new_owner_tokens: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::OwnerTokens(new_owner.clone()))
+            .unwrap_or(Vec::new(&env));
+        for token_id in token_ids.iter() {
+            new_owner_tokens.push_back(token_id);
+        }
+        env.storage().persistent().set(&DataKey::OwnerTokens(new_owner.clone()), &new_owner_tokens);
+        env.storage().persistent().extend_ttl(&DataKey::OwnerTokens(new_owner.clone()), STANDARD_TTL, EXTENDED_TTL);
+        
+        // Mark recovery as completed
+        recovery.completed = true;
+        env.storage().instance().set(&DataKey::RecoveryRequest(recovery_request_id), &recovery);
+        
+        // Clear pending recovery tracking
+        env.storage().instance().remove(&DataKey::PendingRecoveryByHolder(initiator.clone()));
+        
+        // Record audit trail
+        Self::record_audit_trail(&env, recovery_request_id, symbol_short!("final"), initiator.clone(),
+            soroban_sdk::String::from_str(&env, "Recovery finalized and SBTs transferred"));
+        
+        // Emit event
+        let mut topics: Vec<soroban_sdk::Val> = Vec::new(&env);
+        topics.push_back(symbol_short!("recov_fn").into_val(&env));
+        topics.push_back(recovery_request_id.into_val(&env));
+        env.events().publish(topics, (initiator, new_owner));
+    }
+
+    /// Get a recovery request by ID.
+    ///
+    /// # Parameters
+    /// - `recovery_request_id`: The recovery request ID to retrieve.
+    ///
+    /// # Panics
+    /// Panics with `ContractError::RecoveryNotFound` if the request doesn't exist.
+    pub fn get_recovery_request(env: Env, recovery_request_id: u64) -> RecoveryRequest {
+        env.storage().instance()
+            .get(&DataKey::RecoveryRequest(recovery_request_id))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::RecoveryNotFound))
+    }
+
+    /// Get all approvals for a recovery request.
+    ///
+    /// # Parameters
+    /// - `recovery_request_id`: The recovery request ID.
+    ///
+    /// # Returns
+    /// Vector of all approvals for the recovery request.
+    pub fn get_recovery_approvals(env: Env, recovery_request_id: u64) -> Vec<RecoveryApproval> {
+        env.storage().instance()
+            .get(&DataKey::RecoveryApprovals(recovery_request_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Helper function to record audit trail entries for recovery operations.
+    fn record_audit_trail(env: &Env, recovery_request_id: u64, action: Symbol, actor: Address, details: soroban_sdk::String) {
+        let entry_id: u64 = env.storage().instance().get(&DataKey::AuditTrailCount).unwrap_or(0u64) + 1;
+        let entry = AuditTrailEntry {
+            id: entry_id,
+            recovery_request_id,
+            action,
+            actor,
+            timestamp: env.ledger().timestamp(),
+            details,
+        };
+        
+        env.storage().instance().set(&DataKey::AuditTrail(entry_id), &entry);
+        env.storage().instance().set(&DataKey::AuditTrailCount, &entry_id);
+        env.storage().instance().extend_ttl(STANDARD_TTL, EXTENDED_TTL);
+    }
+
+    /// Get an audit trail entry by ID.
+    ///
+    /// # Parameters
+    /// - `audit_id`: The audit trail entry ID.
+    ///
+    /// # Returns
+    /// The audit trail entry, or panics if not found.
+    pub fn get_audit_trail_entry(env: Env, audit_id: u64) -> AuditTrailEntry {
+        env.storage().instance()
+            .get(&DataKey::AuditTrail(audit_id))
+            .expect("audit trail entry not found")
+    }
+
+    /// Get the total count of audit trail entries.
+    pub fn get_audit_trail_count(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::AuditTrailCount).unwrap_or(0u64)
     }
 }
 
@@ -848,5 +1233,308 @@ mod tests {
         // Re-mint must succeed after burn
         let new_id = client.mint(&owner, &cred_id, &uri);
         assert_eq!(client.owner_of(&new_id), owner);
+    }
+
+    // ── SBT Holder Recovery Tests ───────────────────────────────
+
+    #[test]
+    fn test_setup_recovery_guardians() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian1 = Address::generate(&env);
+        let guardian2 = Address::generate(&env);
+        let guardian3 = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian1, guardian2, guardian3];
+
+        client.setup_recovery_guardians(&admin, &guardians, &2u32);
+
+        let retrieved_guardians = client.get_recovery_guardians();
+        assert_eq!(retrieved_guardians.len(), 3);
+        assert_eq!(client.get_recovery_threshold(), 2);
+    }
+
+    #[test]
+    fn test_initiate_recovery() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        // Setup recovery guardians
+        let guardian1 = Address::generate(&env);
+        let guardian2 = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian1, guardian2];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        // Mint an SBT
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let _token_id = client.mint(&owner, &cred_id, &uri);
+
+        // Initiate recovery
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+        assert_eq!(recovery_id, 1);
+
+        // Verify recovery request created
+        let recovery = client.get_recovery_request(&recovery_id);
+        assert_eq!(recovery.initiator, owner);
+        assert_eq!(recovery.new_owner, new_owner);
+        assert!(!recovery.completed);
+        assert_eq!(recovery.approvals_count, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "new owner must be different from initiator")]
+    fn test_initiate_recovery_same_owner_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        client.initiate_recovery(&owner, &owner); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "already exists")]
+    fn test_initiate_recovery_duplicate_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let _recovery_id1 = client.initiate_recovery(&owner, &new_owner);
+        let _recovery_id2 = client.initiate_recovery(&owner, &new_owner); // Should panic
+    }
+
+    #[test]
+    fn test_approve_recovery() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        // Setup recovery guardians
+        let guardian1 = Address::generate(&env);
+        let guardian2 = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian1.clone(), guardian2];
+        client.setup_recovery_guardians(&admin, &guardians, &2u32);
+
+        // Initiate recovery
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+
+        // Approve recovery
+        client.approve_recovery(&guardian1, &recovery_id);
+
+        let recovery = client.get_recovery_request(&recovery_id);
+        assert_eq!(recovery.approvals_count, 1);
+
+        let approvals = client.get_recovery_approvals(&recovery_id);
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals.get(0).unwrap().guardian, guardian1);
+    }
+
+    #[test]
+    #[should_panic(expected = "already approved")]
+    fn test_approve_recovery_duplicate_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian.clone()];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+
+        client.approve_recovery(&guardian, &recovery_id);
+        client.approve_recovery(&guardian, &recovery_id); // Should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "only configured guardians")]
+    fn test_approve_recovery_unauthorized_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+
+        let unauthorized = Address::generate(&env);
+        client.approve_recovery(&unauthorized, &recovery_id); // Should panic
+    }
+
+    #[test]
+    fn test_finalize_recovery_transfers_sbts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        // Setup recovery guardians
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian.clone()];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        // Mint SBTs
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id1 = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+        let cred_id2 = qp_client.issue_credential(&issuer, &owner, &2u32, &meta, &None);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let token_id1 = client.mint(&owner, &cred_id1, &uri);
+        let token_id2 = client.mint(&owner, &cred_id2, &uri);
+
+        // Verify owner has tokens
+        let owner_tokens = client.get_tokens_by_owner(&owner);
+        assert_eq!(owner_tokens.len(), 2);
+
+        // Initiate and approve recovery
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+        client.approve_recovery(&guardian, &recovery_id);
+
+        // Finalize recovery
+        client.finalize_recovery(&owner, &recovery_id);
+
+        // Verify owner no longer has tokens
+        let owner_tokens_after = client.get_tokens_by_owner(&owner);
+        assert_eq!(owner_tokens_after.len(), 0);
+
+        // Verify new owner has tokens
+        let new_owner_tokens = client.get_tokens_by_owner(&new_owner);
+        assert_eq!(new_owner_tokens.len(), 2);
+
+        // Verify token ownership changed
+        assert_eq!(client.owner_of(&token_id1), new_owner);
+        assert_eq!(client.owner_of(&token_id2), new_owner);
+
+        // Verify recovery is marked completed
+        let recovery = client.get_recovery_request(&recovery_id);
+        assert!(recovery.completed);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient approvals")]
+    fn test_finalize_recovery_insufficient_approvals_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, qp_client, _qp_id) = setup_with_qp(&env);
+
+        // Setup recovery guardians with threshold of 2
+        let guardian1 = Address::generate(&env);
+        let guardian2 = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian1.clone(), guardian2];
+        client.setup_recovery_guardians(&admin, &guardians, &2u32);
+
+        // Mint an SBT
+        let issuer = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meta = soroban_sdk::Bytes::from_slice(&env, b"ipfs://meta");
+        let cred_id = qp_client.issue_credential(&issuer, &owner, &1u32, &meta, &None);
+        let uri = Bytes::from_slice(&env, b"ipfs://QmSBT");
+        let _token_id = client.mint(&owner, &cred_id, &uri);
+
+        // Initiate recovery with only one approval (need 2)
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+        client.approve_recovery(&guardian1, &recovery_id);
+
+        // Try to finalize with only 1 approval (should panic)
+        client.finalize_recovery(&owner, &recovery_id);
+    }
+
+    #[test]
+    fn test_recovery_audit_trail() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian.clone()];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+
+        // Initiate recovery - should create audit entry
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+        let initial_count = client.get_audit_trail_count();
+        assert_eq!(initial_count, 1);
+
+        // Get first audit entry
+        let entry1 = client.get_audit_trail_entry(&1u64);
+        assert_eq!(entry1.recovery_request_id, recovery_id);
+        assert_eq!(entry1.actor, owner);
+
+        // Approve recovery - should create another audit entry
+        client.approve_recovery(&guardian, &recovery_id);
+        let count_after_approval = client.get_audit_trail_count();
+        assert_eq!(count_after_approval, 2);
+
+        // Get second audit entry
+        let entry2 = client.get_audit_trail_entry(&2u64);
+        assert_eq!(entry2.recovery_request_id, recovery_id);
+        assert_eq!(entry2.actor, guardian);
+    }
+
+    #[test]
+    fn test_get_recovery_approvals_empty() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+
+        let approvals = client.get_recovery_approvals(&recovery_id);
+        assert_eq!(approvals.len(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "only recovery initiator")]
+    fn test_finalize_recovery_unauthorized_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _qp_client, _qp_id) = setup_with_qp(&env);
+
+        let guardian = Address::generate(&env);
+        let guardians = soroban_sdk::vec![&env, guardian.clone()];
+        client.setup_recovery_guardians(&admin, &guardians, &1u32);
+
+        let owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let recovery_id = client.initiate_recovery(&owner, &new_owner);
+        client.approve_recovery(&guardian, &recovery_id);
+
+        let unauthorized = Address::generate(&env);
+        client.finalize_recovery(&unauthorized, &recovery_id); // Should panic
     }
 }

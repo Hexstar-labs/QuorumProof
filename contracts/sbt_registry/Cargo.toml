@@ -12,6 +12,9 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 quorum_proof = { path = "../quorum_proof", features = ["testutils"] }
+serde_json = "1.0"
+ed25519-dalek = "2.0"
+rand = "0.8"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
