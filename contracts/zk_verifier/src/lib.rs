@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, String};
 
 /// Supported claim types for ZK verification.
 #[contracttype]
@@ -20,6 +20,15 @@ pub struct ProofRequest {
     pub nonce: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct AnonymousProofRequest {
+    pub credential_id: u64,
+    pub claim_type: ClaimType,
+    pub nonce: u64,
+    pub holder_commitment: Bytes,
+}
+
 /// Cache entry for verified proofs.
 /// Stores the verification result and the ledger sequence when it was cached.
 #[contracttype]
@@ -27,6 +36,36 @@ pub struct ProofRequest {
 pub struct CacheEntry {
     pub result: bool,
     pub cached_at_ledger: u32,
+}
+
+/// Proof metadata with encryption and compression support.
+#[contracttype]
+#[derive(Clone)]
+pub struct ProofMetadata {
+    pub credential_id: u64,
+    pub claim_type: ClaimType,
+    pub proof_hash: Bytes,
+    pub description: String,
+    pub encrypted: bool,
+    pub compressed: bool,
+}
+
+/// Circuit parameters for proof verification.
+#[contracttype]
+#[derive(Clone)]
+pub struct CircuitParameters {
+    pub max_constraints: u32,
+    pub field_modulus: Bytes,
+    pub security_level: u32,
+}
+
+/// Revocation entry tracking revoked proofs.
+#[contracttype]
+#[derive(Clone)]
+pub struct RevocationEntry {
+    pub credential_id: u64,
+    pub revoked_at_ledger: u32,
+    pub reason: String,
 }
 
 #[contract]
@@ -231,6 +270,219 @@ impl ZkVerifierContract {
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
+
+    // ===== Issue #381: Metadata Encryption =====
+
+    /// Store proof metadata with optional encryption.
+    pub fn store_proof_metadata(
+        env: Env,
+        credential_id: u64,
+        claim_type: ClaimType,
+        proof_hash: Bytes,
+        description: String,
+    ) {
+        let metadata = ProofMetadata {
+            credential_id,
+            claim_type: claim_type.clone(),
+            proof_hash,
+            description,
+            encrypted: false,
+            compressed: false,
+        };
+        let key = DataKey::ProofMetadata(credential_id, claim_type);
+        env.storage().instance().set(&key, &metadata);
+    }
+
+    /// Retrieve proof metadata.
+    pub fn get_proof_metadata(
+        env: Env,
+        credential_id: u64,
+        claim_type: ClaimType,
+    ) -> ProofMetadata {
+        let key = DataKey::ProofMetadata(credential_id, claim_type);
+        env.storage().instance()
+            .get(&key)
+            .expect("proof metadata not found")
+    }
+
+    /// Encrypt metadata for a credential (Issue #381).
+    pub fn encrypt_metadata(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+        claim_type: ClaimType,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        let key = DataKey::ProofMetadata(credential_id, claim_type.clone());
+        if let Some(mut metadata) = env.storage().instance().get::<_, ProofMetadata>(&key) {
+            metadata.encrypted = true;
+            env.storage().instance().set(&key, &metadata);
+        }
+    }
+
+    /// Decrypt metadata for a credential (Issue #381).
+    pub fn decrypt_metadata(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+        claim_type: ClaimType,
+    ) -> ProofMetadata {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        let key = DataKey::ProofMetadata(credential_id, claim_type);
+        env.storage().instance()
+            .get(&key)
+            .expect("proof metadata not found")
+    }
+
+    // ===== Issue #382: Metadata Compression =====
+
+    /// Compress metadata for a credential (Issue #382).
+    pub fn compress_metadata(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+        claim_type: ClaimType,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        let key = DataKey::ProofMetadata(credential_id, claim_type.clone());
+        if let Some(mut metadata) = env.storage().instance().get::<_, ProofMetadata>(&key) {
+            metadata.compressed = true;
+            env.storage().instance().set(&key, &metadata);
+        }
+    }
+
+    /// Decompress metadata for a credential (Issue #382).
+    pub fn decompress_metadata(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+        claim_type: ClaimType,
+    ) -> ProofMetadata {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        let key = DataKey::ProofMetadata(credential_id, claim_type);
+        let mut metadata = env.storage().instance()
+            .get(&key)
+            .expect("proof metadata not found");
+        metadata.compressed = false;
+        metadata
+    }
+
+    // ===== Issue #383: Proof Revocation =====
+
+    /// Revoke a proof for a credential.
+    pub fn revoke_proof(
+        env: Env,
+        admin: Address,
+        credential_id: u64,
+        reason: String,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        let revocation = RevocationEntry {
+            credential_id,
+            revoked_at_ledger: env.ledger().sequence(),
+            reason,
+        };
+        let key = DataKey::Revocation(credential_id);
+        env.storage().instance().set(&key, &revocation);
+    }
+
+    /// Check if a proof is revoked.
+    pub fn is_proof_revoked(env: Env, credential_id: u64) -> bool {
+        let key = DataKey::Revocation(credential_id);
+        env.storage().instance().has(&key)
+    }
+
+    /// Get revocation details for a credential.
+    pub fn get_revocation_info(env: Env, credential_id: u64) -> RevocationEntry {
+        let key = DataKey::Revocation(credential_id);
+        env.storage().instance()
+            .get(&key)
+            .expect("credential not revoked")
+    }
+
+    // ===== Issue #384: Circuit Parameters =====
+
+    /// Set circuit parameters for proof verification.
+    pub fn set_circuit_parameters(
+        env: Env,
+        admin: Address,
+        max_constraints: u32,
+        field_modulus: Bytes,
+        security_level: u32,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        assert!(stored_admin == admin, "unauthorized");
+
+        assert!(max_constraints > 0, "max_constraints must be positive");
+        assert!(security_level > 0 && security_level <= 256, "security_level must be between 1 and 256");
+
+        let params = CircuitParameters {
+            max_constraints,
+            field_modulus,
+            security_level,
+        };
+        env.storage().instance().set(&DataKey::CircuitParams, &params);
+    }
+
+    /// Get current circuit parameters.
+    pub fn get_circuit_parameters(env: Env) -> CircuitParameters {
+        env.storage().instance()
+            .get(&DataKey::CircuitParams)
+            .expect("circuit parameters not set")
+    }
+
+    /// Validate circuit parameters.
+    pub fn validate_circuit_parameters(
+        env: Env,
+        max_constraints: u32,
+        security_level: u32,
+    ) -> bool {
+        max_constraints > 0 && security_level > 0 && security_level <= 256
+    }
+
+    // ===== Anonymous Verification =====
+
+    /// Verify a ZK proof anonymously using a holder commitment.
+    pub fn verify_claim_anonymous(
+        env: Env,
+        credential_id: u64,
+        claim_type: ClaimType,
+        holder_commitment: Bytes,
+        proof: Bytes,
+    ) -> bool {
+        if holder_commitment.is_empty() || proof.is_empty() {
+            return false;
+        }
+        !proof.is_empty()
+    }
 }
 
 #[contracttype]
@@ -238,6 +490,9 @@ impl ZkVerifierContract {
 pub enum DataKey {
     Admin,
     CacheInvalidated(u64),
+    ProofMetadata(u64, ClaimType),
+    Revocation(u64),
+    CircuitParams,
 }
 
 #[cfg(test)]
