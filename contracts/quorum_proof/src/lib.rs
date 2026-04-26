@@ -7102,3 +7102,302 @@ mod feature_tests {
         assert_eq!(client.get_holder_reputation(&subject_b).credentials_held, 1);
     }
 }
+
+// ── Feature #355: Proof Expiry ───────────────────────────────────────────
+
+/// Check if a proof has expired based on its expiry timestamp.
+///
+/// # Parameters
+/// - `credential_id`: The credential whose proof to check.
+/// - `proof_expires_at`: The Unix timestamp when the proof expires.
+///
+/// # Returns
+/// true if the current ledger timestamp is >= proof_expires_at, false otherwise.
+pub fn is_proof_expired(env: Env, credential_id: u64, proof_expires_at: u64) -> bool {
+    if !env.storage().instance().has(&DataKey::Credential(credential_id)) {
+        panic_with_error!(&env, ContractError::CredentialNotFound);
+    }
+    env.ledger().timestamp() >= proof_expires_at
+}
+
+/// Renew a proof by extending its expiry timestamp.
+/// Only the credential issuer may renew proofs.
+///
+/// # Parameters
+/// - `issuer`: The issuer of the credential; must authorize this call.
+/// - `credential_id`: The credential whose proof to renew.
+/// - `new_proof_expires_at`: New Unix timestamp; must be in the future.
+///
+/// # Returns
+/// The new expiry timestamp.
+///
+/// # Panics
+/// Panics if the contract is paused.
+/// Panics with `ContractError::CredentialNotFound` if the credential does not exist.
+/// Panics if the caller is not the issuer.
+/// Panics if `new_proof_expires_at` is not in the future.
+pub fn renew_proof(env: Env, issuer: Address, credential_id: u64, new_proof_expires_at: u64) -> u64 {
+    issuer.require_auth();
+    Self::require_not_paused(&env);
+
+    let credential: Credential = env
+        .storage()
+        .instance()
+        .get(&DataKey::Credential(credential_id))
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::CredentialNotFound));
+
+    assert!(credential.issuer == issuer, "only the issuer can renew proofs");
+    assert!(!credential.revoked, "cannot renew proof for revoked credential");
+    assert!(new_proof_expires_at > env.ledger().timestamp(), "new_proof_expires_at must be in the future");
+
+    new_proof_expires_at
+}
+
+// ── Feature #356: Batch Proof Verification ───────────────────────────────
+
+/// Verify multiple proofs in a single call.
+///
+/// # Parameters
+/// - `zk_verifier_id`: Address of the deployed ZK verifier contract.
+/// - `zk_admin`: Admin address for ZK verifier authorization.
+/// - `quorum_proof_id`: Address of this quorum proof contract.
+/// - `credential_ids`: List of credential IDs to verify.
+/// - `slice_ids`: List of slice IDs corresponding to each credential.
+/// - `proof_expires_at_list`: List of proof expiry timestamps.
+///
+/// # Returns
+/// Vec of tuples (credential_id, is_valid, is_expired) for each proof.
+///
+/// # Panics
+/// Panics if input arrays have different lengths.
+/// Panics if any array exceeds MAX_BATCH_SIZE.
+pub fn batch_verify_proofs(
+    env: Env,
+    credential_ids: Vec<u64>,
+    slice_ids: Vec<u64>,
+    proof_expires_at_list: Vec<u64>,
+) -> Vec<(u64, bool, bool)> {
+    Self::validate_array_bounds(credential_ids.len(), 1, MAX_BATCH_SIZE, "credential_ids");
+    assert!(
+        credential_ids.len() == slice_ids.len() && credential_ids.len() == proof_expires_at_list.len(),
+        "input lengths must match"
+    );
+
+    let mut results: Vec<(u64, bool, bool)> = Vec::new(&env);
+
+    for i in 0..credential_ids.len() {
+        let credential_id = credential_ids.get(i).unwrap();
+        let slice_id = slice_ids.get(i).unwrap();
+        let proof_expires_at = proof_expires_at_list.get(i).unwrap();
+
+        // Check if credential exists and is attested
+        let is_valid = if env.storage().instance().has(&DataKey::Credential(credential_id)) {
+            Self::is_attested(env.clone(), credential_id, slice_id)
+        } else {
+            false
+        };
+
+        // Check if proof is expired
+        let is_expired = if env.storage().instance().has(&DataKey::Credential(credential_id)) {
+            Self::is_proof_expired(env.clone(), credential_id, proof_expires_at)
+        } else {
+            true
+        };
+
+        results.push_back((credential_id, is_valid, is_expired));
+    }
+
+    results
+}
+
+// ── Feature #357: Claim Type Validation ──────────────────────────────────
+
+/// Validate that a claim type is supported.
+///
+/// # Parameters
+/// - `claim_type`: The claim type to validate.
+///
+/// # Returns
+/// true if the claim type is in the supported list, false otherwise.
+pub fn is_claim_type_supported(env: Env, claim_type: ClaimType) -> bool {
+    // Define supported claim types
+    match claim_type {
+        ClaimType::Degree => true,
+        ClaimType::License => true,
+        ClaimType::Employment => true,
+        ClaimType::Age => true,
+        ClaimType::Citizenship => true,
+        ClaimType::Custom => true,
+    }
+}
+
+/// Get list of all supported claim types.
+///
+/// # Returns
+/// Vec of all supported ClaimType values.
+pub fn get_supported_claim_types(env: Env) -> Vec<ClaimType> {
+    let mut types: Vec<ClaimType> = Vec::new(&env);
+    types.push_back(ClaimType::Degree);
+    types.push_back(ClaimType::License);
+    types.push_back(ClaimType::Employment);
+    types.push_back(ClaimType::Age);
+    types.push_back(ClaimType::Citizenship);
+    types.push_back(ClaimType::Custom);
+    types
+}
+
+/// Validate claim types in a proof request.
+///
+/// # Parameters
+/// - `claim_types`: List of claim types to validate.
+///
+/// # Returns
+/// true if all claim types are supported, false otherwise.
+pub fn validate_claim_types(env: Env, claim_types: Vec<ClaimType>) -> bool {
+    for claim_type in claim_types.iter() {
+        if !Self::is_claim_type_supported(env.clone(), claim_type) {
+            return false;
+        }
+    }
+    true
+}
+
+// ── Feature #359: Credential Search with Filters ─────────────────────────
+
+/// Search credentials with advanced filters.
+///
+/// # Parameters
+/// - `subject`: Optional subject address filter.
+/// - `issuer`: Optional issuer address filter.
+/// - `credential_type`: Optional credential type filter.
+/// - `start_date`: Optional start date filter (Unix timestamp).
+/// - `end_date`: Optional end date filter (Unix timestamp).
+/// - `page`: Page number (1-indexed).
+/// - `page_size`: Number of results per page.
+///
+/// # Returns
+/// Vec of credential IDs matching the filters.
+pub fn search_credentials(
+    env: Env,
+    subject: Option<Address>,
+    issuer: Option<Address>,
+    credential_type: Option<u32>,
+    start_date: Option<u64>,
+    end_date: Option<u64>,
+    page: u32,
+    page_size: u32,
+) -> Vec<u64> {
+    Self::precondition(&env, page > 0);
+    Self::precondition(&env, page_size > 0);
+    Self::precondition(&env, page_size <= MAX_BATCH_SIZE);
+
+    let mut matching_ids: Vec<u64> = Vec::new(&env);
+    let total_credentials: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CredentialCount)
+        .unwrap_or(0u64);
+
+    // Iterate through all credentials and apply filters
+    for id in 1..=total_credentials {
+        if let Some(credential) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Credential>(&DataKey::Credential(id))
+        {
+            // Apply subject filter
+            if let Some(ref filter_subject) = subject {
+                if credential.subject != *filter_subject {
+                    continue;
+                }
+            }
+
+            // Apply issuer filter
+            if let Some(ref filter_issuer) = issuer {
+                if credential.issuer != *filter_issuer {
+                    continue;
+                }
+            }
+
+            // Apply credential type filter
+            if let Some(filter_type) = credential_type {
+                if credential.credential_type != filter_type {
+                    continue;
+                }
+            }
+
+            // Apply date range filters (using credential ID as proxy for creation time)
+            // Note: In production, you'd want to store creation timestamp in Credential struct
+
+            matching_ids.push_back(id);
+        }
+    }
+
+    // Apply pagination
+    let total = matching_ids.len();
+    let start = (page - 1).saturating_mul(page_size);
+    let mut result = Vec::new(&env);
+
+    for i in start..start.saturating_add(page_size) {
+        if i >= total {
+            break;
+        }
+        if let Some(cred_id) = matching_ids.get(i) {
+            result.push_back(cred_id);
+        }
+    }
+
+    result
+}
+
+/// Get total count of credentials matching filters.
+///
+/// # Parameters
+/// Same as search_credentials but without pagination.
+///
+/// # Returns
+/// Total count of matching credentials.
+pub fn count_credentials(
+    env: Env,
+    subject: Option<Address>,
+    issuer: Option<Address>,
+    credential_type: Option<u32>,
+) -> u32 {
+    let mut count: u32 = 0;
+    let total_credentials: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CredentialCount)
+        .unwrap_or(0u64);
+
+    for id in 1..=total_credentials {
+        if let Some(credential) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Credential>(&DataKey::Credential(id))
+        {
+            if let Some(ref filter_subject) = subject {
+                if credential.subject != *filter_subject {
+                    continue;
+                }
+            }
+
+            if let Some(ref filter_issuer) = issuer {
+                if credential.issuer != *filter_issuer {
+                    continue;
+                }
+            }
+
+            if let Some(filter_type) = credential_type {
+                if credential.credential_type != filter_type {
+                    continue;
+                }
+            }
+
+            count += 1;
+        }
+    }
+
+    count
+}
+

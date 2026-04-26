@@ -1,0 +1,89 @@
+TEST PLAN: Features #355, #356, #357, #359
+
+=== SMART CONTRACT TESTS ===
+
+Run all tests:
+```bash
+cd QuorumProof/contracts/quorum_proof
+cargo test
+```
+
+Specific feature tests:
+```bash
+# Feature #355: Proof Expiry
+cargo test test_is_proof_expired
+cargo test test_renew_proof
+cargo test test_renew_proof_unauthorized
+
+# Feature #356: Batch Verification
+cargo test test_batch_verify_proofs
+cargo test test_batch_verify_proofs_with_expiry
+
+# Feature #357: Claim Type Validation
+cargo test test_is_claim_type_supported
+cargo test test_get_supported_claim_types
+cargo test test_validate_claim_types
+
+# Feature #359: Credential Search
+cargo test test_search_credentials_by_subject
+cargo test test_search_credentials_by_issuer
+cargo test test_search_credentials_by_type
+cargo test test_search_credentials_with_pagination
+cargo test test_count_credentials
+cargo test test_search_credentials_combined_filters
+```
+
+=== BUILD CONTRACT ===
+
+```bash
+cd QuorumProof
+cargo build --release --target wasm32-unknown-unknown
+```
+
+=== DEPLOY TO TESTNET ===
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/quorum_proof.wasm \
+  --source ADMIN_SECRET_KEY \
+  --network testnet
+```
+
+=== FRONTEND INTEGRATION ===
+
+1. Update .env with new contract ID
+2. Import new functions in components
+3. Test search UI component
+4. Test batch verification
+5. Test proof expiry checks
+
+=== MANUAL TESTING CHECKLIST ===
+
+Feature #355 - Proof Expiry:
+[ ] Create credential with proof expiry
+[ ] Check is_proof_expired returns false before expiry
+[ ] Advance time, check returns true after expiry
+[ ] Renew proof as issuer
+[ ] Verify non-issuer cannot renew
+
+Feature #356 - Batch Verification:
+[ ] Create multiple credentials
+[ ] Attest credentials
+[ ] Batch verify all at once
+[ ] Verify results match individual checks
+[ ] Test with expired proofs
+
+Feature #357 - Claim Type Validation:
+[ ] Check all standard types are supported
+[ ] Get list of supported types
+[ ] Validate array of claim types
+[ ] Test with invalid types
+
+Feature #359 - Credential Search:
+[ ] Search by subject address
+[ ] Search by issuer address
+[ ] Search by credential type
+[ ] Search with combined filters
+[ ] Test pagination (page 1, 2, 3)
+[ ] Count credentials with filters
+[ ] Verify empty results handled correctly

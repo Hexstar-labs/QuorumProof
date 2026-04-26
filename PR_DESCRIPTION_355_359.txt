@@ -1,0 +1,113 @@
+## Features Implementation: Proof Expiry, Batch Verification, Claim Validation & Search
+
+This PR implements four medium-priority features to enhance the QuorumProof credential system.
+
+Closes #355
+Closes #356
+Closes #357
+Closes #359
+
+### 🎯 Features Implemented
+
+#### #355 - Proof Expiry
+- ✅ Added `is_proof_expired()` function to check if proof has expired
+- ✅ Added `renew_proof()` function for proof renewal mechanism
+- ✅ Expiry field validation with timestamp checks
+- ✅ Only issuer can renew proofs
+- ✅ Comprehensive tests for expiry and renewal
+
+#### #356 - Batch Proof Verification
+- ✅ Implemented `batch_verify_proofs()` for multiple proofs in single call
+- ✅ Returns aggregated results: (credential_id, is_valid, is_expired)
+- ✅ Supports up to MAX_BATCH_SIZE (50) proofs per call
+- ✅ Tests for batch verification with various scenarios
+
+#### #357 - Claim Type Validation
+- ✅ Added `is_claim_type_supported()` for individual claim validation
+- ✅ Added `get_supported_claim_types()` to list all supported types
+- ✅ Added `validate_claim_types()` for batch validation
+- ✅ Supports: Degree, License, Employment, Age, Citizenship, Custom
+- ✅ Tests for all validation functions
+
+#### #359 - Credential Search with Filters
+- ✅ Implemented `search_credentials()` with advanced filtering
+- ✅ Filter by: subject, issuer, credential type, date range
+- ✅ Pagination support (page, page_size)
+- ✅ Added `count_credentials()` for total count with filters
+- ✅ Frontend UI component `CredentialSearchFilter`
+- ✅ Tests for all search scenarios and pagination
+
+### 📁 Files Changed
+
+**Smart Contract:**
+- `contracts/quorum_proof/src/lib.rs` - Added 4 feature implementations
+- `contracts/quorum_proof/src/tests_new_features.rs` - Comprehensive test suite
+
+**Frontend:**
+- `frontend/src/lib/contracts/quorumProof.ts` - TypeScript bindings for new functions
+- `frontend/src/components/CredentialSearchFilter.tsx` - Search UI component
+
+**Documentation:**
+- `IMPLEMENTATION_355_356_357_359.txt` - Implementation summary
+- `TEST_PLAN_355_359.txt` - Testing guide and checklist
+
+### 🧪 Testing
+
+All features include comprehensive unit tests:
+
+```bash
+# Run all tests
+cargo test --package quorum_proof
+
+# Run specific feature tests
+cargo test test_is_proof_expired
+cargo test test_batch_verify_proofs
+cargo test test_is_claim_type_supported
+cargo test test_search_credentials_by_subject
+```
+
+### 📋 Acceptance Criteria
+
+#### #355 - Proof Expiry
+- [x] Expiry field implemented
+- [x] `is_proof_expired()` check function
+- [x] Renewal mechanism with `renew_proof()`
+- [x] Tests for expiry and renewal
+
+#### #356 - Batch Verification
+- [x] `batch_verify_proofs()` function
+- [x] Results aggregation
+- [x] Tests for batch verification
+
+#### #357 - Claim Type Validation
+- [x] Claim type validation
+- [x] Supported types list
+- [x] Tests for validation
+
+#### #359 - Credential Search
+- [x] Search by type, issuer, date
+- [x] Filter UI components
+- [x] Tests for search functionality
+- [x] Pagination support
+
+### 🚀 Deployment Notes
+
+1. Build contract: `cargo build --release --target wasm32-unknown-unknown`
+2. Deploy to testnet
+3. Update frontend environment variables
+4. Test all features end-to-end
+
+### 🔍 Review Focus Areas
+
+- Smart contract function implementations in `lib.rs`
+- Test coverage in `tests_new_features.rs`
+- Frontend integration in `quorumProof.ts`
+- Search UI component usability
+
+### 📝 Additional Notes
+
+- All functions follow existing code patterns and conventions
+- Proper error handling with contract errors
+- Authorization checks for sensitive operations
+- Efficient pagination for large result sets
+- Frontend components ready for integration

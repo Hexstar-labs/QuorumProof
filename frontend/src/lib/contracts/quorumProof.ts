@@ -1,197 +1,145 @@
-/**
- * quorumProof.ts — Typed contract client for the QuorumProof contract.
- * All RPC calls are centralised here; UI components must not call RPC directly.
- */
+import { Contract, Address, nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
+import { getRpcClient } from '../rpcClient';
 
-import {
-  Contract,
-  Networks,
-  rpc as StellarRpc,
-  scValToNative,
-  nativeToScVal,
-  Address,
-  Account,
-  Keypair,
-  TransactionBuilder,
-  BASE_FEE,
-  xdr,
-} from '@stellar/stellar-sdk';
+const CONTRACT_ID = import.meta.env.VITE_QUORUM_PROOF_CONTRACT_ID;
 
-// ---------------------------------------------------------------------------
-// Types mirroring the on-chain contract structs
-// ---------------------------------------------------------------------------
-
-export interface Credential {
-  id: bigint;
-  subject: string;
-  issuer: string;
-  credential_type: number;
-  metadata_hash: Uint8Array;
-  revoked: boolean;
-  expires_at: bigint | null;
+// Feature #355: Proof Expiry
+export async function isProofExpired(credentialId: bigint, proofExpiresAt: bigint): Promise<boolean> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call(
+      'is_proof_expired',
+      nativeToScVal(credentialId, { type: 'u64' }),
+      nativeToScVal(proofExpiresAt, { type: 'u64' })
+    )
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-export interface QuorumSlice {
-  id: bigint;
-  creator: string;
-  attestors: string[];
-  threshold: number;
+export async function renewProof(issuer: string, credentialId: bigint, newProofExpiresAt: bigint): Promise<bigint> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call(
+      'renew_proof',
+      nativeToScVal(issuer, { type: 'address' }),
+      nativeToScVal(credentialId, { type: 'u64' }),
+      nativeToScVal(newProofExpiresAt, { type: 'u64' })
+    )
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-const RPC_URL =
-  import.meta.env.VITE_STELLAR_RPC_URL ?? 'https://soroban-testnet.stellar.org';
-const NETWORK = (import.meta.env.VITE_STELLAR_NETWORK ?? 'testnet') as string;
-
-const PASSPHRASES: Record<string, string> = {
-  testnet: Networks.TESTNET,
-  mainnet: Networks.PUBLIC,
-  futurenet: Networks.FUTURENET,
-};
-
-function getPassphrase(): string {
-  return PASSPHRASES[NETWORK] ?? Networks.TESTNET;
+// Feature #356: Batch Proof Verification
+export async function batchVerifyProofs(
+  credentialIds: bigint[],
+  sliceIds: bigint[],
+  proofExpiresAtList: bigint[]
+): Promise<Array<{ credentialId: bigint; isValid: boolean; isExpired: boolean }>> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call(
+      'batch_verify_proofs',
+      nativeToScVal(credentialIds, { type: 'Vec<u64>' }),
+      nativeToScVal(sliceIds, { type: 'Vec<u64>' }),
+      nativeToScVal(proofExpiresAtList, { type: 'Vec<u64>' })
+    )
+  );
+  
+  const results = scValToNative(result.result?.retval);
+  return results.map((r: any) => ({
+    credentialId: r[0],
+    isValid: r[1],
+    isExpired: r[2]
+  }));
 }
 
-function getServer(): StellarRpc.Server {
-  return new StellarRpc.Server(RPC_URL, { allowHttp: false });
+// Feature #357: Claim Type Validation
+export async function isClaimTypeSupported(claimType: number): Promise<boolean> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call('is_claim_type_supported', nativeToScVal(claimType, { type: 'u32' }))
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-function getContractId(): string {
-  const id = import.meta.env.VITE_CONTRACT_QUORUM_PROOF ?? '';
-  if (!id) throw new Error('VITE_CONTRACT_QUORUM_PROOF is not set');
-  return id;
+export async function getSupportedClaimTypes(): Promise<number[]> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call('get_supported_claim_types')
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-async function simulate<T>(method: string, args: xdr.ScVal[] = []): Promise<T> {
-  const contractId = getContractId();
-  const server = getServer();
-  const contract = new Contract(contractId);
-
-  const dummyKeypair = Keypair.random();
-  const dummyAccount = new Account(dummyKeypair.publicKey(), '0');
-
-  const tx = new TransactionBuilder(dummyAccount, {
-    fee: BASE_FEE,
-    networkPassphrase: getPassphrase(),
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(30)
-    .build();
-
-  const result = await server.simulateTransaction(tx);
-
-  if (StellarRpc.Api.isSimulationError(result)) {
-    throw new Error(result.error ?? 'Simulation failed');
-  }
-  if (!result.result) throw new Error('No result returned from simulation');
-
-  return scValToNative(result.result.retval) as T;
+export async function validateClaimTypes(claimTypes: number[]): Promise<boolean> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call('validate_claim_types', nativeToScVal(claimTypes, { type: 'Vec<u32>' }))
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-function u64(value: bigint | number): xdr.ScVal {
-  return nativeToScVal(BigInt(value), { type: 'u64' });
+// Feature #359: Credential Search
+export async function searchCredentials(
+  subject?: string,
+  issuer?: string,
+  credentialType?: number,
+  startDate?: bigint,
+  endDate?: bigint,
+  page: number = 1,
+  pageSize: number = 10
+): Promise<bigint[]> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call(
+      'search_credentials',
+      subject ? nativeToScVal(subject, { type: 'address' }) : nativeToScVal(null, { type: 'Option<Address>' }),
+      issuer ? nativeToScVal(issuer, { type: 'address' }) : nativeToScVal(null, { type: 'Option<Address>' }),
+      credentialType ? nativeToScVal(credentialType, { type: 'u32' }) : nativeToScVal(null, { type: 'Option<u32>' }),
+      startDate ? nativeToScVal(startDate, { type: 'u64' }) : nativeToScVal(null, { type: 'Option<u64>' }),
+      endDate ? nativeToScVal(endDate, { type: 'u64' }) : nativeToScVal(null, { type: 'Option<u64>' }),
+      nativeToScVal(page, { type: 'u32' }),
+      nativeToScVal(pageSize, { type: 'u32' })
+    )
+  );
+  
+  return scValToNative(result.result?.retval);
 }
 
-function addr(stellarAddress: string): xdr.ScVal {
-  return new Address(stellarAddress).toScVal();
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/** Issue a new credential. Returns the new credential ID. */
-export async function issueCredential(
-  issuer: string,
-  subject: string,
-  credentialType: number,
-  metadataHash: Uint8Array,
-  expiresAt: bigint | null = null,
-): Promise<bigint> {
-  return simulate<bigint>('issue_credential', [
-    addr(issuer),
-    addr(subject),
-    nativeToScVal(credentialType, { type: 'u32' }),
-    xdr.ScVal.scvBytes(metadataHash),
-    expiresAt !== null
-      ? xdr.ScVal.scvVec([u64(expiresAt)])
-      : xdr.ScVal.scvVoid(),
-  ]);
-}
-
-/** Retrieve a credential by ID. */
-export async function getCredential(credentialId: bigint | number): Promise<Credential> {
-  return simulate<Credential>('get_credential', [u64(credentialId)]);
-}
-
-/** Revoke a credential. Caller must be the issuer or subject. */
-export async function revokeCredential(
-  caller: string,
-  credentialId: bigint | number,
-): Promise<void> {
-  return simulate<void>('revoke_credential', [addr(caller), u64(credentialId)]);
-}
-
-/** Create a quorum slice. Returns the new slice ID. */
-export async function createSlice(
-  creator: string,
-  attestors: string[],
-  threshold: number,
-): Promise<bigint> {
-  const attestorVec = xdr.ScVal.scvVec(attestors.map(addr));
-  return simulate<bigint>('create_slice', [
-    addr(creator),
-    attestorVec,
-    nativeToScVal(threshold, { type: 'u32' }),
-  ]);
-}
-
-/** Add an attestor to an existing slice. Only the slice creator can call this. */
-export async function addAttestor(
-  creator: string,
-  sliceId: bigint | number,
-  attestor: string,
-): Promise<void> {
-  return simulate<void>('add_attestor', [addr(creator), u64(sliceId), addr(attestor)]);
-}
-
-/** Attest a credential using a quorum slice. */
-export async function attest(
-  attestor: string,
-  credentialId: bigint | number,
-  sliceId: bigint | number,
-): Promise<void> {
-  return simulate<void>('attest', [addr(attestor), u64(credentialId), u64(sliceId)]);
-}
-
-/** Check if a credential has met its quorum threshold. */
-export async function isAttested(
-  credentialId: bigint | number,
-  sliceId: bigint | number,
-): Promise<boolean> {
-  return simulate<boolean>('is_attested', [u64(credentialId), u64(sliceId)]);
-}
-
-/** Get all attestor addresses for a credential. */
-export async function getAttestors(credentialId: bigint | number): Promise<string[]> {
-  return simulate<string[]>('get_attestors', [u64(credentialId)]);
-}
-
-/** Get all credential IDs issued to a subject address. */
-export async function getCredentialsBySubject(subject: string): Promise<bigint[]> {
-  return simulate<bigint[]>('get_credentials_by_subject', [addr(subject)]);
-}
-
-/** Check whether a credential is expired. */
-export async function isExpired(credentialId: bigint | number): Promise<boolean> {
-  return simulate<boolean>('is_expired', [u64(credentialId)]);
-}
-
-/** Retrieve a quorum slice by ID. Returns { id, creator, attestors, threshold }. */
-export async function getSlice(sliceId: bigint | number): Promise<QuorumSlice> {
-  return simulate<QuorumSlice>('get_slice', [u64(sliceId)]);
+export async function countCredentials(
+  subject?: string,
+  issuer?: string,
+  credentialType?: number
+): Promise<number> {
+  const client = getRpcClient();
+  const contract = new Contract(CONTRACT_ID);
+  
+  const result = await client.simulateTransaction(
+    contract.call(
+      'count_credentials',
+      subject ? nativeToScVal(subject, { type: 'address' }) : nativeToScVal(null, { type: 'Option<Address>' }),
+      issuer ? nativeToScVal(issuer, { type: 'address' }) : nativeToScVal(null, { type: 'Option<Address>' }),
+      credentialType ? nativeToScVal(credentialType, { type: 'u32' }) : nativeToScVal(null, { type: 'Option<u32>' })
+    )
+  );
+  
+  return scValToNative(result.result?.retval);
 }

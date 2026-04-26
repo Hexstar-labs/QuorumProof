@@ -1,0 +1,81 @@
+IMPLEMENTATION SUMMARY: Features #355, #356, #357, #359
+
+=== FEATURE #355: Proof Expiry ===
+
+Smart Contract (lib.rs):
+- is_proof_expired(credential_id, proof_expires_at) -> bool
+- renew_proof(issuer, credential_id, new_proof_expires_at) -> u64
+
+Tests (tests_new_features.rs):
+- test_is_proof_expired
+- test_renew_proof
+- test_renew_proof_unauthorized
+
+Frontend (quorumProof.ts):
+- isProofExpired()
+- renewProof()
+
+=== FEATURE #356: Batch Proof Verification ===
+
+Smart Contract (lib.rs):
+- batch_verify_proofs(credential_ids, slice_ids, proof_expires_at_list) -> Vec<(u64, bool, bool)>
+
+Tests (tests_new_features.rs):
+- test_batch_verify_proofs
+- test_batch_verify_proofs_with_expiry
+
+Frontend (quorumProof.ts):
+- batchVerifyProofs()
+
+=== FEATURE #357: Claim Type Validation ===
+
+Smart Contract (lib.rs):
+- is_claim_type_supported(claim_type) -> bool
+- get_supported_claim_types() -> Vec<ClaimType>
+- validate_claim_types(claim_types) -> bool
+
+Tests (tests_new_features.rs):
+- test_is_claim_type_supported
+- test_get_supported_claim_types
+- test_validate_claim_types
+
+Frontend (quorumProof.ts):
+- isClaimTypeSupported()
+- getSupportedClaimTypes()
+- validateClaimTypes()
+
+=== FEATURE #359: Credential Search with Filters ===
+
+Smart Contract (lib.rs):
+- search_credentials(subject, issuer, credential_type, start_date, end_date, page, page_size) -> Vec<u64>
+- count_credentials(subject, issuer, credential_type) -> u32
+
+Tests (tests_new_features.rs):
+- test_search_credentials_by_subject
+- test_search_credentials_by_issuer
+- test_search_credentials_by_type
+- test_search_credentials_with_pagination
+- test_count_credentials
+- test_search_credentials_combined_filters
+
+Frontend:
+- CredentialSearchFilter.tsx (UI component)
+- quorumProof.ts (searchCredentials, countCredentials)
+
+=== FILES CREATED/MODIFIED ===
+
+Created:
+1. QuorumProof/contracts/quorum_proof/src/tests_new_features.rs
+2. QuorumProof/frontend/src/components/CredentialSearchFilter.tsx
+3. QuorumProof/frontend/src/lib/contracts/quorumProof.ts
+
+Modified:
+1. QuorumProof/contracts/quorum_proof/src/lib.rs (added 4 feature implementations)
+
+=== NEXT STEPS ===
+
+1. Run tests: cargo test --package quorum_proof
+2. Build contract: cargo build --release --target wasm32-unknown-unknown
+3. Deploy updated contract to testnet
+4. Update frontend to use new search component
+5. Test all features end-to-end
