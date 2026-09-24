@@ -7,6 +7,7 @@ import credentialsRouter from './routes/credentials.js';
 import credentialExportRouter from './routes/credentialExport.js';
 import atomicSwapRouter from './routes/atomicSwap.js';
 import sybilDetectionRouter from './routes/sybilDetection.js';
+import timeLockPuzzleRouter from './routes/timeLockPuzzle.js';
 import verifyRouter from './routes/verify.js';
 import notificationsRouter from './routes/notifications.js';
 import analyticsRouter from './routes/analytics.js';
@@ -134,6 +135,7 @@ app.use('/api/credentials', credentialsRouter);
 app.use('/api/credentials', credentialExportRouter); // #1000 credential export (json/pdf/qrcode)
 app.use('/api/atomic-swap', atomicSwapRouter); // #1578 atomic swap for credential trading
 app.use('/api/sybil', sybilDetectionRouter); // #1579 Sybil attack detection
+app.use('/api/time-lock-puzzle', timeLockPuzzleRouter); // #1580 time-lock puzzles for verification
 app.use('/api/verify', verifyRouter);
 app.use('/api/credentials', shareLinksRouter); // #877 share links
 app.use('/api/credentials', consentRouter); // #881 consent management
