@@ -5,10 +5,9 @@ import { createCompressionFromEnv } from './middleware/compression.js';
 import slicesRouter from './routes/slices.js';
 import credentialsRouter from './routes/credentials.js';
 import credentialExportRouter from './routes/credentialExport.js';
-import atomicSwapRouter from './routes/atomicSwap.js';
-import sybilDetectionRouter from './routes/sybilDetection.js';
-import timeLockPuzzleRouter from './routes/timeLockPuzzle.js';
-import distributedRevocationRegistryRouter from './routes/distributedRevocationRegistry.js';
+import { createHolderAttestationRouter } from './routes/holderAttestation.js';
+import { createEncryptedCredentialsRouter } from './routes/encryptedCredentials.js';
+import { createAuditRouter } from './routes/credentialAudit.js';
 import verifyRouter from './routes/verify.js';
 import notificationsRouter from './routes/notifications.js';
 import analyticsRouter from './routes/analytics.js';
@@ -26,6 +25,7 @@ import oauth2Router from './routes/oauth2.js';
 import healthRouter from './routes/health.js';
 import privilegeEscalationRouter from './routes/privilegeEscalation.js';
 import tracingRouter from './routes/tracing.js';
+import adminRouter from './routes/admin.js';
 // #1309: Auto-generated OpenAPI docs (Swagger UI / ReDoc)
 import docsRouter from './routes/docs.js';
 import { createDashboardRouter } from './routes/dashboard.js';
@@ -44,10 +44,14 @@ import { rbac } from './middleware/rbac.js';
 import { createDDoSProtection } from './middleware/ddosProtection.js';
 import { createRequestSigning } from './middleware/requestSigning.js';
 import { apiKeyRateLimiter } from './middleware/apiKeyRateLimit.js';
+// #1570: PoW-based rate limiting
+import { createPoWRateLimiter } from './middleware/powRateLimiter.js';
 // #1306: Structured logging
 import { structuredLoggingMiddleware } from './middleware/structuredLogging.js';
 // #1307: Distributed tracing
 import { distributedTracingMiddleware } from './middleware/distributedTracingMiddleware.js';
+// #1577: IP-based access control for sensitive endpoints
+import { createIPWhitelistMiddleware, loadWhitelistFromEnv } from './middleware/ipWhitelist.js';
 import { createWsServer } from './ws/server.js';
 import { getSubscriberCount } from './ws/subscriptions.js';
 import { getWsMetrics, getWsMetricsPrometheus } from './ws/metrics.js';
@@ -106,10 +110,23 @@ const requestDeduplication = createRequestDeduplication({ ttlMs: 100, enabled: t
 app.use('/api', requestDeduplication);
 app.use('/api', requestSigning);
 
+// #1577: Initialize IP whitelist from environment and apply middleware
+loadWhitelistFromEnv();
+const ipWhitelistMiddleware = createIPWhitelistMiddleware();
+app.use('/api/admin', ipWhitelistMiddleware);
+app.use('/api', ipWhitelistMiddleware);
+
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? '100', 10);
 const RATE_LIMIT_BACKOFF = parseInt(process.env.RATE_LIMIT_BACKOFF ?? '2', 10);
 const RATE_LIMIT_MAX_VIOLATIONS = parseInt(process.env.RATE_LIMIT_MAX_VIOLATIONS ?? '5', 10);
+
+// #1570: PoW-based rate limiting
+const powRateLimiter = createPoWRateLimiter({
+  enablePoW: process.env.POW_RATE_LIMITING_ENABLED !== 'false',
+  powExemptDuration: parseInt(process.env.POW_EXEMPT_DURATION_MS ?? '3600000', 10),
+  powEnabled: true,
+});
 
 // #1304: Use adaptive rate limiter with anomaly detection.
 // Falls back gracefully — the base createRateLimiter is kept for
@@ -128,16 +145,16 @@ const apiRateLimiter = createAdaptiveRateLimiter({
   },
 });
 
+app.use('/api', powRateLimiter.middleware);
 app.use('/api', apiRateLimiter);
 app.use(cacheControl);
 
 app.use('/api/slices', slicesRouter);
 app.use('/api/credentials', credentialsRouter);
 app.use('/api/credentials', credentialExportRouter); // #1000 credential export (json/pdf/qrcode)
-app.use('/api/atomic-swap', atomicSwapRouter); // #1578 atomic swap for credential trading
-app.use('/api/sybil', sybilDetectionRouter); // #1579 Sybil attack detection
-app.use('/api/time-lock-puzzle', timeLockPuzzleRouter); // #1580 time-lock puzzles for verification
-app.use('/api/distributed-revocation', distributedRevocationRegistryRouter); // #1581 decentralized revocation registry
+app.use('/api/credentials', createHolderAttestationRouter()); // #1571 holder attestation
+app.use('/api/credentials', createEncryptedCredentialsRouter()); // #1572 threshold encryption
+app.use('/api/credentials', createAuditRouter()); // #1573 audit trail
 app.use('/api/verify', verifyRouter);
 app.use('/api/credentials', shareLinksRouter); // #877 share links
 app.use('/api/credentials', consentRouter); // #881 consent management
@@ -166,11 +183,18 @@ app.use('/api/me', createDashboardRouter(sorobanClient));
 // #1308: Health check endpoints
 app.use('/health', healthRouter);
 
+// #1570: PoW-based rate limiting endpoints
+app.post('/api/pow/challenge', powRateLimiter.requestChallenge);
+app.post('/api/pow/verify', powRateLimiter.submitSolution);
+
 // #1309: Auto-generated OpenAPI 3.1 docs — JSON spec, Swagger UI, ReDoc.
 app.use('/api-docs', docsRouter);
 
 // #1305: Privilege escalation prevention
 app.use('/api/admin/privilege-escalation', privilegeEscalationRouter);
+
+// #1577: IP-based access control management
+app.use('/api/admin', adminRouter);
 
 // #1307: Distributed tracing
 app.use('/api/tracing', tracingRouter);
