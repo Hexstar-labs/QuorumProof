@@ -271,3 +271,8 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 - [Stellar Development Foundation](https://stellar.org) for Soroban
 - The Stellar whitepaper for the FBA trust model that inspired this design
 - Drips Wave for supporting public goods funding
+
+## Handsoff notes
+
+<!-- handsoff-issue-1555 -->
+- #1555: Implement Credential Caching Layer with TTL

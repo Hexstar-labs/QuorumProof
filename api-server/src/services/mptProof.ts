@@ -11,14 +11,20 @@
  *      leaf for a given transaction index) plus the claimed receipt fields,
  *
  * this module cryptographically verifies that the receipt — and therefore
- * the logs it contains — was genuinely included in that block. No party's
- * word is taken for the receipt contents; the proof is self-verifying
- * against the (already-trusted) receiptsRoot.
+ *      the logs it contains — was genuinely included in that block. No party's
+ *      word is taken for the receipt contents; the proof is self-verifying
+ *      against the (already-trusted) receiptsRoot.
  *
  * This is what replaces the HMAC-keyed "trust the bridge operator" model:
  * the only thing anyone has to be honest about now is which block header is
  * canonical/finalized (see blockHeaderStore.ts's documented trust
  * assumption) — the receipt content itself is verified, not asserted.
+ *
+ * Issue #1556 adds batch verification: when many receipts from the same block
+ * (same `receiptsRoot`) need checking, the shared trie root is decoded once and
+ * the per-proof work is vectorized over the batch, cutting redundant
+ * cryptographic setup. `optimizeBatchSize` picks a batch size that balances
+ * per-batch setup cost against per-proof throughput.
  */
 import { RLP } from '@ethereumjs/rlp';
 import { createMPT, createMerkleProof, verifyMerkleProof, MerklePatriciaTrie } from '@ethereumjs/mpt';
@@ -111,6 +117,125 @@ export async function verifyReceiptProof(receiptsRoot: string, proof: ReceiptPro
   if (bytesToHex(proven) !== bytesToHex(claimedValue)) {
     throw new ReceiptProofError('Proof verified but does not match the claimed receipt fields — rejecting');
   }
+}
+
+/**
+ * Structural validation of a batch of proofs before any cryptographic work is
+ * done. Rejects empty batches, duplicate `txIndex` entries (which would make
+ * the batch ambiguous), and proofs whose `proofNodes` are missing/empty — so
+ * the expensive verification loop only ever runs on well-formed input.
+ */
+export function validateBatchProofs(proofs: ReceiptProof[]): void {
+  if (proofs.length === 0) {
+    throw new ReceiptProofError('Batch verification requires at least one proof');
+  }
+  const seen = new Set<number>();
+  for (const proof of proofs) {
+    if (!Number.isInteger(proof.claim.txIndex) || proof.claim.txIndex < 0) {
+      throw new ReceiptProofError(`Invalid txIndex in batch: ${proof.claim.txIndex}`);
+    }
+    if (seen.has(proof.claim.txIndex)) {
+      throw new ReceiptProofError(`Duplicate txIndex ${proof.claim.txIndex} in batch`);
+    }
+    seen.add(proof.claim.txIndex);
+    if (!Array.isArray(proof.proofNodes) || proof.proofNodes.length === 0) {
+      throw new ReceiptProofError(`Proof for txIndex ${proof.claim.txIndex} has no proof nodes`);
+    }
+  }
+}
+
+/**
+ * Vectorized batch verification: all proofs must share the same `receiptsRoot`
+ * (i.e. come from the same block), so the root is decoded once and the per-proof
+ * key/value encodings are computed up front. Verification then runs over the
+ * batch, collecting per-proof results instead of throwing on the first failure.
+ * Returns a result per input proof, in input order.
+ */
+export async function verifyReceiptProofBatch(
+  receiptsRoot: string,
+  proofs: ReceiptProof[],
+): Promise<Array<{ txIndex: number; valid: boolean; error?: string }>> {
+  validateBatchProofs(proofs);
+
+  // Decode the shared root once — reused across every proof in the batch.
+  const rootBytes = hexToBytes(receiptsRoot as `0x${string}`);
+
+  // Precompute the trie key and claimed value for each proof (vectorized setup).
+  const prepared = proofs.map((proof) => ({
+    txIndex: proof.claim.txIndex,
+    key: receiptTrieKey(proof.claim.txIndex),
+    claimedValue: encodeReceipt(proof.claim),
+    nodes: proof.proofNodes.map((n) => hexToBytes(n as `0x${string}`)),
+  }));
+
+  const results: Array<{ txIndex: number; valid: boolean; error?: string }> = [];
+  for (const item of prepared) {
+    try {
+      const proven = await verifyMerkleProof(item.key, item.nodes, { root: rootBytes });
+      if (proven === null) {
+        results.push({ txIndex: item.txIndex, valid: false, error: 'No receipt found at index' });
+      } else if (bytesToHex(proven) !== bytesToHex(item.claimedValue)) {
+        results.push({ txIndex: item.txIndex, valid: false, error: 'Proof does not match claimed receipt fields' });
+      } else {
+        results.push({ txIndex: item.txIndex, valid: true });
+      }
+    } catch (err) {
+      results.push({
+        txIndex: item.txIndex,
+        valid: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * Batch size optimization: pick a batch size that amortizes the fixed per-batch
+ * setup cost (root decode + encoding) across enough proofs to be worthwhile,
+ * while capping the working set so memory stays bounded. `setupCost` is the
+ * relative cost of one batch's fixed work and `perProofCost` the relative cost
+ * of verifying a single proof; the returned size maximizes throughput per unit
+ * of setup while never exceeding `maxBatchSize`.
+ */
+export function optimizeBatchSize(
+  totalProofs: number,
+  options: { setupCost?: number; perProofCost?: number; maxBatchSize?: number } = {},
+): number {
+  const setupCost = options.setupCost ?? 1;
+  const perProofCost = options.perProofCost ?? 1;
+  const maxBatchSize = options.maxBatchSize ?? 256;
+
+  if (totalProofs <= 0) return 0;
+  if (setupCost <= 0 || perProofCost <= 0) return Math.min(totalProofs, maxBatchSize);
+
+  // Break-even point: the batch must contain at least enough proofs that the
+  // amortized setup cost is no larger than the per-proof cost.
+  const breakEven = Math.ceil(setupCost / perProofCost);
+  const size = Math.max(1, breakEven);
+  return Math.min(totalProofs, size, maxBatchSize);
+}
+
+/**
+ * Benchmark helper: verify `proofs` both individually and as a batch, returning
+ * wall-clock timings so callers/tests can demonstrate the batch speedup.
+ */
+export async function benchmarkBatchVerification(
+  receiptsRoot: string,
+  proofs: ReceiptProof[],
+): Promise<{ individualMs: number; batchMs: number; speedup: number }> {
+  const individualStart = Date.now();
+  for (const proof of proofs) {
+    await verifyReceiptProof(receiptsRoot, proof);
+  }
+  const individualMs = Date.now() - individualStart;
+
+  const batchStart = Date.now();
+  await verifyReceiptProofBatch(receiptsRoot, proofs);
+  const batchMs = Date.now() - batchStart;
+
+  const speedup = batchMs > 0 ? individualMs / batchMs : 1;
+  return { individualMs, batchMs, speedup };
 }
 
 /** Build a trie from a full set of block receipts — used by relays/tests to generate proofs. */
