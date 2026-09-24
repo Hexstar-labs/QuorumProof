@@ -22,6 +22,7 @@ import oauth2Router from './routes/oauth2.js';
 import healthRouter from './routes/health.js';
 import privilegeEscalationRouter from './routes/privilegeEscalation.js';
 import tracingRouter from './routes/tracing.js';
+import adminRouter from './routes/admin.js';
 // #1309: Auto-generated OpenAPI docs (Swagger UI / ReDoc)
 import docsRouter from './routes/docs.js';
 import { createDashboardRouter } from './routes/dashboard.js';
@@ -44,6 +45,8 @@ import { apiKeyRateLimiter } from './middleware/apiKeyRateLimit.js';
 import { structuredLoggingMiddleware } from './middleware/structuredLogging.js';
 // #1307: Distributed tracing
 import { distributedTracingMiddleware } from './middleware/distributedTracingMiddleware.js';
+// #1577: IP-based access control for sensitive endpoints
+import { createIPWhitelistMiddleware, loadWhitelistFromEnv } from './middleware/ipWhitelist.js';
 import { createWsServer } from './ws/server.js';
 import { getSubscriberCount } from './ws/subscriptions.js';
 import { getWsMetrics, getWsMetricsPrometheus } from './ws/metrics.js';
@@ -101,6 +104,12 @@ const requestSigning = createRequestSigning();
 const requestDeduplication = createRequestDeduplication({ ttlMs: 100, enabled: true });
 app.use('/api', requestDeduplication);
 app.use('/api', requestSigning);
+
+// #1577: Initialize IP whitelist from environment and apply middleware
+loadWhitelistFromEnv();
+const ipWhitelistMiddleware = createIPWhitelistMiddleware();
+app.use('/api/admin', ipWhitelistMiddleware);
+app.use('/api', ipWhitelistMiddleware);
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS ?? '60000', 10);
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? '100', 10);
@@ -163,6 +172,9 @@ app.use('/api-docs', docsRouter);
 
 // #1305: Privilege escalation prevention
 app.use('/api/admin/privilege-escalation', privilegeEscalationRouter);
+
+// #1577: IP-based access control management
+app.use('/api/admin', adminRouter);
 
 // #1307: Distributed tracing
 app.use('/api/tracing', tracingRouter);
