@@ -6,6 +6,7 @@ import slicesRouter from './routes/slices.js';
 import credentialsRouter from './routes/credentials.js';
 import credentialExportRouter from './routes/credentialExport.js';
 import { createHolderAttestationRouter } from './routes/holderAttestation.js';
+import { createEncryptedCredentialsRouter } from './routes/encryptedCredentials.js';
 import verifyRouter from './routes/verify.js';
 import notificationsRouter from './routes/notifications.js';
 import analyticsRouter from './routes/analytics.js';
@@ -142,6 +143,7 @@ app.use('/api/slices', slicesRouter);
 app.use('/api/credentials', credentialsRouter);
 app.use('/api/credentials', credentialExportRouter); // #1000 credential export (json/pdf/qrcode)
 app.use('/api/credentials', createHolderAttestationRouter()); // #1571 holder attestation
+app.use('/api/credentials', createEncryptedCredentialsRouter()); // #1572 threshold encryption
 app.use('/api/verify', verifyRouter);
 app.use('/api/credentials', shareLinksRouter); // #877 share links
 app.use('/api/credentials', consentRouter); // #881 consent management
