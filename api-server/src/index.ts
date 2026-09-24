@@ -40,6 +40,8 @@ import { rbac } from './middleware/rbac.js';
 import { createDDoSProtection } from './middleware/ddosProtection.js';
 import { createRequestSigning } from './middleware/requestSigning.js';
 import { apiKeyRateLimiter } from './middleware/apiKeyRateLimit.js';
+// #1570: PoW-based rate limiting
+import { createPoWRateLimiter } from './middleware/powRateLimiter.js';
 // #1306: Structured logging
 import { structuredLoggingMiddleware } from './middleware/structuredLogging.js';
 // #1307: Distributed tracing
@@ -107,6 +109,13 @@ const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? '100', 10);
 const RATE_LIMIT_BACKOFF = parseInt(process.env.RATE_LIMIT_BACKOFF ?? '2', 10);
 const RATE_LIMIT_MAX_VIOLATIONS = parseInt(process.env.RATE_LIMIT_MAX_VIOLATIONS ?? '5', 10);
 
+// #1570: PoW-based rate limiting
+const powRateLimiter = createPoWRateLimiter({
+  enablePoW: process.env.POW_RATE_LIMITING_ENABLED !== 'false',
+  powExemptDuration: parseInt(process.env.POW_EXEMPT_DURATION_MS ?? '3600000', 10),
+  powEnabled: true,
+});
+
 // #1304: Use adaptive rate limiter with anomaly detection.
 // Falls back gracefully — the base createRateLimiter is kept for
 // targeted use cases; the adaptive one covers the /api/* prefix.
@@ -124,6 +133,7 @@ const apiRateLimiter = createAdaptiveRateLimiter({
   },
 });
 
+app.use('/api', powRateLimiter.middleware);
 app.use('/api', apiRateLimiter);
 app.use(cacheControl);
 
@@ -157,6 +167,10 @@ app.use('/api/me', createDashboardRouter(sorobanClient));
 
 // #1308: Health check endpoints
 app.use('/health', healthRouter);
+
+// #1570: PoW-based rate limiting endpoints
+app.post('/api/pow/challenge', powRateLimiter.requestChallenge);
+app.post('/api/pow/verify', powRateLimiter.submitSolution);
 
 // #1309: Auto-generated OpenAPI 3.1 docs — JSON spec, Swagger UI, ReDoc.
 app.use('/api-docs', docsRouter);
