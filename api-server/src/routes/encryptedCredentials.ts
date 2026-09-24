@@ -22,7 +22,7 @@ export function createEncryptedCredentialsRouter() {
   // POST /api/credentials/:id/encrypt
   // Encrypt sensitive fields of a credential
   router.post('/:id/encrypt', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { sensitive_fields, keyCustodians } = req.body as {
       sensitive_fields?: Record<string, unknown>;
       keyCustodians?: string[];
@@ -76,7 +76,7 @@ export function createEncryptedCredentialsRouter() {
   // GET /api/credentials/:id/encrypted
   // Get encrypted credential data (metadata only, no key shares)
   router.get('/:id/encrypted', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     try {
       const credentialId = BigInt(id);
@@ -113,7 +113,7 @@ export function createEncryptedCredentialsRouter() {
   // POST /api/credentials/:id/decrypt/authorize
   // Request decryption authorization
   router.post('/:id/decrypt/authorize', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { requester_address, reason } = req.body as {
       requester_address?: string;
       reason?: string;
@@ -158,7 +158,7 @@ export function createEncryptedCredentialsRouter() {
   // POST /api/credentials/:id/decrypt
   // Decrypt with key shares (requires authorization)
   router.post('/:id/decrypt', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { requester_address, key_shares } = req.body as {
       requester_address?: string;
       key_shares?: unknown[];
@@ -238,7 +238,7 @@ export function createEncryptedCredentialsRouter() {
   // GET /api/credentials/:id/decrypt/status
   // Check decryption authorization status
   router.get('/:id/decrypt/status', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { requester_address } = req.query as { requester_address?: string };
 
     if (!requester_address) {
@@ -279,7 +279,7 @@ export function createEncryptedCredentialsRouter() {
   // GET /api/credentials/:id/decrypt/audit
   // Get decryption audit log (admin only)
   router.get('/:id/decrypt/audit', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     // TODO: Add authorization check for admin-only access
 

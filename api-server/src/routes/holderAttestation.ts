@@ -20,7 +20,7 @@ export function createHolderAttestationRouter() {
   // POST /api/credentials/:id/attestation/challenge
   // Request a signing challenge for the credential holder
   router.post('/:id/attestation/challenge', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { holder_address } = req.body as { holder_address?: string };
 
     if (!holder_address || typeof holder_address !== 'string') {
@@ -72,7 +72,7 @@ export function createHolderAttestationRouter() {
   // POST /api/credentials/:id/attestation/verify
   // Verify a holder's signature
   router.post('/:id/attestation/verify', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { challenge_id, holder_address, signature } = req.body as {
       challenge_id?: string;
       holder_address?: string;
@@ -128,7 +128,7 @@ export function createHolderAttestationRouter() {
   // GET /api/credentials/:id/attestation/status
   // Check the attestation status for a holder
   router.get('/:id/attestation/status', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
     const { holder_address } = req.query as { holder_address?: string };
 
     if (!holder_address) {

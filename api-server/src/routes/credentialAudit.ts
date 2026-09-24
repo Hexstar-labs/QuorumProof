@@ -20,7 +20,7 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit
   // Get full change history for a credential
   router.get('/:id/audit', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     try {
       const credentialId = BigInt(id);
@@ -55,7 +55,8 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit/field/:field
   // Get history for a specific field
   router.get('/:id/audit/field/:field', async (req: Request, res: Response) => {
-    const { id, field } = req.params;
+    const id = (req.params as Record<string, string>).id;
+    const field = (req.params as Record<string, string>).field;
 
     try {
       const credentialId = BigInt(id);
@@ -86,7 +87,8 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit/user/:user
   // Get changes made by a specific user
   router.get('/:id/audit/user/:user', async (req: Request, res: Response) => {
-    const { id, user } = req.params;
+    const id = (req.params as Record<string, string>).id;
+    const user = (req.params as Record<string, string>).user;
 
     try {
       const credentialId = BigInt(id);
@@ -117,7 +119,7 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit/report
   // Generate comprehensive audit report
   router.get('/:id/audit/report', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     try {
       const credentialId = BigInt(id);
@@ -158,7 +160,7 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit/anomalies
   // Detect and return suspicious activity
   router.get('/:id/audit/anomalies', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     try {
       const credentialId = BigInt(id);
@@ -187,7 +189,7 @@ export function createAuditRouter() {
   // GET /api/credentials/:id/audit/integrity
   // Check integrity status and verify hash chain
   router.get('/:id/audit/integrity', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = (req.params as Record<string, string>).id;
 
     try {
       const credentialId = BigInt(id);
