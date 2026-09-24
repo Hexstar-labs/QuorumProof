@@ -64,7 +64,7 @@ router.post('/initiate', (req: Request, res: Response) => {
  */
 router.post('/:swap_id/lock', (req: Request, res: Response) => {
   try {
-    const { swap_id } = req.params;
+    const swap_id = (req.params.swap_id || '') as string;
     const { participant_address } = req.body as Record<string, unknown>;
 
     if (!participant_address || typeof participant_address !== 'string') {
@@ -86,7 +86,7 @@ router.post('/:swap_id/lock', (req: Request, res: Response) => {
  */
 router.post('/:swap_id/complete', (req: Request, res: Response) => {
   try {
-    const { swap_id } = req.params;
+    const swap_id = (req.params.swap_id || '') as string;
     const { initiator_signature, responder_signature } = req.body as Record<string, unknown>;
 
     if (!initiator_signature || typeof initiator_signature !== 'string') {
@@ -113,7 +113,7 @@ router.post('/:swap_id/complete', (req: Request, res: Response) => {
  */
 router.post('/:swap_id/cancel', (req: Request, res: Response) => {
   try {
-    const { swap_id } = req.params;
+    const swap_id = (req.params.swap_id || '') as string;
     const { canceller_address } = req.body as Record<string, unknown>;
 
     if (!canceller_address || typeof canceller_address !== 'string') {
@@ -135,7 +135,7 @@ router.post('/:swap_id/cancel', (req: Request, res: Response) => {
  */
 router.get('/:swap_id', (req: Request, res: Response) => {
   try {
-    const { swap_id } = req.params;
+    const swap_id = (req.params.swap_id || '') as string;
     const swap = swapService.getSwap(swap_id);
     res.json({ ok: true, data: swap });
   } catch (error: unknown) {
@@ -150,7 +150,7 @@ router.get('/:swap_id', (req: Request, res: Response) => {
  */
 router.get('/participant/:address', (req: Request, res: Response) => {
   try {
-    const { address } = req.params;
+    const address = (req.params.address || '') as string;
     const swaps = swapService.listSwapsForParticipant(address);
     res.json({ ok: true, data: swaps, count: swaps.length });
   } catch (error: unknown) {

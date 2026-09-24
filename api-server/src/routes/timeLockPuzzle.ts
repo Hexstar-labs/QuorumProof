@@ -139,7 +139,7 @@ router.get('/:puzzle_id/solution', (req: Request, res: Response) => {
  */
 router.get('/estimate/:difficulty', (req: Request, res: Response) => {
   try {
-    const { difficulty } = req.params;
+    const difficulty = (req.params.difficulty || '') as string;
 
     if (!['low', 'medium', 'high'].includes(difficulty)) {
       res.status(400).json(problemJson(400, 'invalid-parameter', 'difficulty must be low, medium, or high'));

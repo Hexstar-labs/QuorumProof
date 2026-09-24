@@ -59,7 +59,7 @@ router.post('/revoke', (req: Request, res: Response) => {
  */
 router.get('/status/:credential_id', (req: Request, res: Response) => {
   try {
-    const { credential_id } = req.params;
+    const credential_id = (req.params.credential_id || '') as string;
     const credId = parseInt(credential_id, 10);
 
     if (!Number.isInteger(credId)) {
@@ -111,7 +111,7 @@ router.post('/peer/register', (req: Request, res: Response) => {
  */
 router.post('/peer/:peer_id/unreachable', (req: Request, res: Response) => {
   try {
-    const { peer_id } = req.params;
+    const peer_id = (req.params.peer_id || '') as string;
 
     const reg = getRegistry();
     reg.markPeerUnreachable(peer_id);
@@ -129,7 +129,7 @@ router.post('/peer/:peer_id/unreachable', (req: Request, res: Response) => {
  */
 router.post('/peer/:peer_id/reachable', (req: Request, res: Response) => {
   try {
-    const { peer_id } = req.params;
+    const peer_id = (req.params.peer_id || '') as string;
 
     const reg = getRegistry();
     reg.markPeerReachable(peer_id);
@@ -147,7 +147,7 @@ router.post('/peer/:peer_id/reachable', (req: Request, res: Response) => {
  */
 router.post('/sync/:peer_id', (req: Request, res: Response) => {
   try {
-    const { peer_id } = req.params;
+    const peer_id = (req.params.peer_id || '') as string;
 
     const reg = getRegistry();
     const success = reg.syncWithPeer(peer_id);

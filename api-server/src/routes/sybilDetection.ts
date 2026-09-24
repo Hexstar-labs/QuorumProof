@@ -49,7 +49,7 @@ router.post('/record-event', (req: Request, res: Response) => {
  */
 router.get('/score/:address', (req: Request, res: Response) => {
   try {
-    const { address } = req.params;
+    const address = (req.params.address || '') as string;
 
     const sybilScore = sybilService.getSybilScore(address);
 
@@ -71,7 +71,7 @@ router.get('/score/:address', (req: Request, res: Response) => {
  */
 router.get('/activity/:address', (req: Request, res: Response) => {
   try {
-    const { address } = req.params;
+    const address = (req.params.address || '') as string;
 
     const activity = sybilService.getAccountActivity(address);
 
@@ -93,7 +93,7 @@ router.get('/activity/:address', (req: Request, res: Response) => {
  */
 router.get('/alerts/:address', (req: Request, res: Response) => {
   try {
-    const { address } = req.params;
+    const address = (req.params.address || '') as string;
 
     const alerts = sybilService.getAlertsForAddress(address);
 
@@ -114,7 +114,7 @@ router.get('/alerts/:address', (req: Request, res: Response) => {
  */
 router.post('/dismiss-alert/:alert_id', (req: Request, res: Response) => {
   try {
-    const { alert_id } = req.params;
+    const alert_id = (req.params.alert_id || '') as string;
 
     const dismissed = sybilService.dismissAlert(alert_id);
 
