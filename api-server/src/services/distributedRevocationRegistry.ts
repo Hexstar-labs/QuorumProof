@@ -234,13 +234,13 @@ export class DistributedRevocationRegistry {
     peers: RevocationPeer[];
   } {
     const allPeers = Array.from(this.peers.values());
-    const reachablePeers = allPeers.filter(p => p.reachable).length;
+    const reachablePeerCount = allPeers.filter(p => p.reachable).length;
 
     return {
       node_id: this.nodeId,
       role: this.role,
       total_peers: allPeers.length,
-      reachable_peers,
+      reachable_peers: reachablePeerCount,
       peers: allPeers,
     };
   }

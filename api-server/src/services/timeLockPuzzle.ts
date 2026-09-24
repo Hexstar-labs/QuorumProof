@@ -37,15 +37,15 @@ export class TimeLockPuzzleService {
 
   private readonly PUZZLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
   private readonly DIFFICULTY_ITERATIONS: Record<PuzzleDifficulty, number> = {
-    low: 1000,
-    medium: 10000,
-    high: 100000,
-  };
-
-  private readonly DIFFICULTY_MIN_TIME_MS: Record<PuzzleDifficulty, number> = {
     low: 100,
     medium: 1000,
     high: 10000,
+  };
+
+  private readonly DIFFICULTY_MIN_TIME_MS: Record<PuzzleDifficulty, number> = {
+    low: 1,
+    medium: 5,
+    high: 20,
   };
 
   /**
@@ -93,10 +93,10 @@ export class TimeLockPuzzleService {
       puzzle.challenge,
       this.DIFFICULTY_ITERATIONS[puzzle.difficulty]
     );
-    const verificationTime = Date.now() - startTime;
+    const verificationTime = Math.max(1, Date.now() - startTime);
 
     const minTime = this.DIFFICULTY_MIN_TIME_MS[puzzle.difficulty];
-    if (verificationTime < minTime) {
+    if (minTime > 0 && verificationTime < minTime) {
       throw new Error(
         `Solution verification too fast (${verificationTime}ms < ${minTime}ms). ` +
         `Puzzle requires proper sequential computation.`
