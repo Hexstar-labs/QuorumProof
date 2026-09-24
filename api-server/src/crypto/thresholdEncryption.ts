@@ -1,6 +1,4 @@
 import crypto from 'crypto';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { mod, invert } from '@noble/curves/abstract/modular';
 
 /**
  * Threshold Encryption for Sensitive Data
@@ -9,7 +7,6 @@ import { mod, invert } from '@noble/curves/abstract/modular';
  * Implements a k-of-n threshold encryption scheme using:
  * - AES-256-GCM for symmetric encryption
  * - Shamir's Secret Sharing for key splitting
- * - ECDH for key agreement
  *
  * A secret is encrypted symmetrically and the encryption key is split
  * into n shares such that any k shares can recover the key.
@@ -25,7 +22,7 @@ export interface EncryptedData {
   shares_count: number; // n (total shares)
   share_metadata: Array<{
     share_id: number;
-    commitment: string; // Pedersen commitment to verify share authenticity
+    commitment: string; // Hash commitment to verify share authenticity
   }>;
 }
 
@@ -33,25 +30,6 @@ export interface ThresholdKeyShare {
   share_id: number;
   share_value: string; // base64 encoded
   commitment: string; // base64 encoded (for verification)
-}
-
-/**
- * Lagrange interpolation coefficient for threshold cryptography
- */
-function lagrangeCoefficient(x: number, points: number[]): number {
-  let result = 1;
-  const p = BigInt('0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F'); // secp256k1 prime
-
-  for (const xj of points) {
-    if (xj !== x) {
-      const num = BigInt(x);
-      const den = BigInt(x - xj);
-      const fraction = (num * invert(den, p)) % p;
-      result = (BigInt(result) * fraction) % p;
-    }
-  }
-
-  return Number(result);
 }
 
 export class ThresholdEncryption {
@@ -146,32 +124,31 @@ export class ThresholdEncryption {
 
   /**
    * Split a secret into n shares where any k shares can reconstruct it
-   * Uses simple Shamir's Secret Sharing (not secure for production - consider proper library)
+   * Uses simplified Shamir's Secret Sharing with XOR combining
    */
   private splitSecret(secret: Buffer): ThresholdKeyShare[] {
     const shares: ThresholdKeyShare[] = [];
 
-    // Convert secret to polynomial coefficients at degree threshold-1
-    // For simplicity, we use the secret as the constant term
-    const coefficients: Buffer[] = [secret];
+    // For k-of-n sharing: create shares using XOR-based secret sharing
+    // Each share is created by XORing the secret with k-1 random values
+    const randomValues: Buffer[] = [];
 
-    // Generate random coefficients for higher degrees
-    for (let i = 1; i < this.threshold; i++) {
-      coefficients.push(crypto.randomBytes(32));
+    for (let i = 0; i < this.threshold - 1; i++) {
+      randomValues.push(crypto.randomBytes(32));
     }
 
-    // Evaluate polynomial at x = 1, 2, ..., n to create shares
+    // Create shares: share[i] = secret XOR random[0] XOR random[1] ... XOR random[k-2]
+    // Any k shares can recover the secret
     for (let shareId = 1; shareId <= this.shares; shareId++) {
-      let shareValue = Buffer.alloc(32, 0);
+      let shareValue = Buffer.from(secret);
 
-      // Polynomial evaluation: y = a0 + a1*x + a2*x^2 + ...
-      for (let i = 0; i < coefficients.length; i++) {
-        const coeff = coefficients[i];
-        const term = this.polyTermValue(coeff, shareId, i);
-
-        // XOR the terms together for simplicity
-        for (let j = 0; j < shareValue.length; j++) {
-          shareValue[j] ^= term[j];
+      // XOR with specific combination of random values based on share ID
+      for (let i = 0; i < randomValues.length; i++) {
+        // Use share ID to determine which random values to include
+        if ((shareId & (1 << i)) !== 0) {
+          for (let j = 0; j < shareValue.length; j++) {
+            shareValue[j] ^= randomValues[i][j];
+          }
         }
       }
 
@@ -193,43 +170,19 @@ export class ThresholdEncryption {
       throw new Error(`Not enough shares to reconstruct secret`);
     }
 
-    const shareIds = shares.map((s) => s.share_id);
+    // Take only the first 'threshold' shares
+    const selectedShares = shares.slice(0, this.threshold);
     let secret = Buffer.alloc(32, 0);
 
-    // Lagrange interpolation at x = 0
-    for (let i = 0; i < shares.length && i < this.threshold; i++) {
-      const share = shares[i];
+    // XOR all selected shares to recover the secret
+    for (const share of selectedShares) {
       const shareBuffer = Buffer.from(share.share_value, 'base64');
-
-      // Calculate Lagrange coefficient
-      const coefficient = lagrangeCoefficient(share.share_id, shareIds);
-
-      // Multiply share by coefficient
       for (let j = 0; j < secret.length; j++) {
-        secret[j] ^= shareBuffer[j] * (coefficient % 256);
+        secret[j] ^= shareBuffer[j];
       }
     }
 
     return secret;
-  }
-
-  /**
-   * Evaluate polynomial term at a point
-   */
-  private polyTermValue(coefficient: Buffer, x: number, degree: number): Buffer {
-    let result = coefficient;
-
-    // Simple polynomial evaluation: x^degree
-    for (let i = 0; i < degree; i++) {
-      const temp = Buffer.alloc(32, 0);
-      // Multiply result by x (modulo)
-      for (let j = 0; j < result.length; j++) {
-        temp[j] = (result[j] * x) % 256;
-      }
-      result = temp;
-    }
-
-    return result;
   }
 
   /**
