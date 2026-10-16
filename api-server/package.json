@@ -4,6 +4,7 @@
   "description": "REST API server for QuorumProof Soroban contracts",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/types/index.d.ts",
   "scripts": {
     "build": "tsc --noEmit false 2>&1 || true",
     "start": "node dist/index.js",
@@ -16,7 +17,9 @@
     "migrate": "tsx src/migrations/cli.ts up",
     "migrate:rollback": "tsx src/migrations/cli.ts down",
     "openapi:generate": "tsx scripts/generate-openapi-spec.ts",
-    "generate:client": "npm run openapi:generate && openapi-ts"
+    "generate:client": "npm run openapi:generate && openapi-ts",
+    "generate:types": "openapi-ts -f openapi-ts.types.config.ts",
+    "build:types": "tsc -p tsconfig.types.json"
   },
   "dependencies": {
     "@ethereumjs/block": "^10.1.2",
