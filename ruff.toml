@@ -1,0 +1,23 @@
+# Python lint configuration (Issue #1679). Covers scripts/, monitoring/ and
+# examples/. See docs/linting.md for the full standard.
+
+line-length = 100
+target-version = "py310"
+
+extend-exclude = [
+  "node_modules",
+  "dist",
+  "build",
+  ".venv",
+]
+
+[lint]
+# Conservative rule set: pyflakes (F), pycodestyle errors/warnings (E, W) and
+# import sorting (I). Broader rule sets are opt-in per directory.
+select = ["E", "F", "W", "I"]
+# Long lines are wrapped by the formatter; E501 is not enforced separately.
+ignore = ["E501"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

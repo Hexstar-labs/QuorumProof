@@ -1,0 +1,13 @@
+# Clippy configuration (Issue #1679). Applies to every crate in the workspace.
+# See docs/linting.md for the full standard and how to run it.
+
+# Keep contract entry points readable; Soroban functions often take many args.
+too-many-arguments-threshold = 8
+cognitive-complexity-threshold = 30
+
+# Tests may unwrap/expect freely: a panic is the desired failure mode there.
+# Production contract code is still covered by scripts/check_unwraps.sh (#1391).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
