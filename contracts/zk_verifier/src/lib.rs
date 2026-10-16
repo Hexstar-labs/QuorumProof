@@ -1077,8 +1077,21 @@ impl ZkVerifierContract {
     }
 
     /// Set the admin address once after deployment.
+    /// Set the contract admin. Can only succeed once per deployment.
+    ///
+    /// Issue #1721: the new admin must authorize this call. Without
+    /// `require_auth`, whoever submitted the first transaction after deployment
+    /// could claim the admin role.
+    ///
+    /// # Parameters
+    /// - `admin`: The address to become admin (must authorize).
+    ///
+    /// # Panics
+    /// - If the contract is already initialized.
+    /// - If `admin` has not authorized the call.
     pub fn initialize(env: Env, admin: Address) {
         assert!(!env.storage().instance().has(&DataKey::Admin), "already initialized");
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 

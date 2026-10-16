@@ -34,6 +34,18 @@ CONTRACT_ZK_VERIFIER=$(stellar contract deploy \
   --source deployer \
   --network testnet)
 
+# Issue #1721: claim the zk_verifier admin role immediately after deployment.
+# `initialize` requires the admin's authorization, so the deployer (the signing
+# source) becomes admin and no one else can. Soroban SDK 21 cannot deploy and
+# initialize in one transaction, so there is a short window between the two
+# calls. See docs/zk-verifier-initialization.md for the residual risk and the
+# post-deploy check.
+stellar contract invoke \
+  --id "$CONTRACT_ZK_VERIFIER" \
+  --source deployer \
+  --network testnet \
+  -- initialize --admin "$DEPLOYER_ADDRESS"
+
 echo "CONTRACT_QUORUM_PROOF=$CONTRACT_QUORUM_PROOF"
 echo "CONTRACT_SBT_REGISTRY=$CONTRACT_SBT_REGISTRY"
 echo "CONTRACT_ZK_VERIFIER=$CONTRACT_ZK_VERIFIER"

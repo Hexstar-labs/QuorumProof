@@ -312,3 +312,134 @@ mod regression_1362 {
         client.check_quorum_intersection(&slice_ids, &cert);
     }
 }
+
+#[cfg(test)]
+mod regression_1721 {
+    // regression: #1721 — authenticate `zk_verifier::initialize` against the
+    // admin address.
+    //
+    // Bug description:
+    //   `ZkVerifierContract::initialize(env, admin)` checked that no admin was
+    //   stored and then stored `admin`, but never called `admin.require_auth()`.
+    //   Whoever submitted the first transaction after deployment could name
+    //   any address as admin and take control of the verifier. An attacker
+    //   watching the deployment could win that race.
+    //
+    // The fix (see issue #1721):
+    //   `initialize` calls `admin.require_auth()` before storing the admin, so
+    //   the transaction must carry that address's authorization.
+    //
+    // These tests must fail if the `require_auth()` call is removed: the
+    // unauthorized-caller test would then complete and store the attacker's
+    // chosen admin.
+
+    use soroban_sdk::{
+        testutils::{Address as _, MockAuth, MockAuthInvoke},
+        Address, Env, IntoVal, Val, Vec,
+    };
+    use zk_verifier::{ZkVerifierContract, ZkVerifierContractClient};
+
+    /// Register the contract without mocking any authorization.
+    fn register(env: &Env) -> (Address, ZkVerifierContractClient<'_>) {
+        let id = env.register_contract(None, ZkVerifierContract);
+        let client = ZkVerifierContractClient::new(env, &id);
+        (id, client)
+    }
+
+    /// An attacker-submitted `initialize` that names the victim as admin must
+    /// be rejected when the victim has not authorized it.
+    // regression: #1721
+    #[test]
+    fn regression_1721_initialize_rejects_unauthorized_admin() {
+        let env = Env::default();
+        let (id, client) = register(&env);
+        let victim = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        // Only the attacker has authorized a call. The call names the victim
+        // as admin, so the victim's `require_auth` must fail.
+        let args: Vec<Val> = soroban_sdk::vec![&env, victim.clone().into_val(&env)];
+        env.mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args,
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = client.try_initialize(&victim);
+        assert!(result.is_err(), "initialize must reject an admin that did not authorize it");
+    }
+
+    /// A failed takeover attempt must leave the admin slot empty, so the real
+    /// admin can still initialize the contract afterwards.
+    // regression: #1721
+    #[test]
+    fn regression_1721_failed_takeover_leaves_admin_unset() {
+        let env = Env::default();
+        let (id, client) = register(&env);
+        let real_admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let args: Vec<Val> = soroban_sdk::vec![&env, real_admin.clone().into_val(&env)];
+        env.mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args,
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_initialize(&real_admin).is_err());
+
+        // The real admin authorizes its own initialization and succeeds.
+        let args: Vec<Val> = soroban_sdk::vec![&env, real_admin.clone().into_val(&env)];
+        env.mock_auths(&[MockAuth {
+            address: &real_admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args,
+                sub_invokes: &[],
+            },
+        }]);
+        client.initialize(&real_admin);
+    }
+
+    /// Happy path: the admin authorizes its own initialization.
+    // regression: #1721
+    #[test]
+    fn regression_1721_admin_can_initialize_with_own_auth() {
+        let env = Env::default();
+        let (id, client) = register(&env);
+        let admin = Address::generate(&env);
+
+        let args: Vec<Val> = soroban_sdk::vec![&env, admin.clone().into_val(&env)];
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args,
+                sub_invokes: &[],
+            },
+        }]);
+        client.initialize(&admin);
+
+        // A second initialization is still rejected, even by the same admin.
+        let args: Vec<Val> = soroban_sdk::vec![&env, admin.clone().into_val(&env)];
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &id,
+                fn_name: "initialize",
+                args,
+                sub_invokes: &[],
+            },
+        }]);
+        assert!(client.try_initialize(&admin).is_err());
+    }
+}
